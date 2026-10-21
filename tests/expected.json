@@ -1,0 +1,9 @@
+{
+  "P1120593.JPG": { "expect": "crop", "minConf": 0.8, "note": "blown-out frame + side-arms crossing the opening (user-added hard case)" },
+  "P1120605.JPG": { "expect": "crop", "minConf": 0.8, "note": "blown-out frame + side-arms (user-added hard case)" },
+  "P1120587.JPG": { "expect": "crop", "minConf": 0.8, "note": "classic sample, downscaled to 1600px" },
+  "P1120589.JPG": { "expect": "crop", "minConf": 0.8, "note": "classic sample, downscaled to 1600px" },
+  "P1120599.JPG": { "expect": "crop", "minConf": 0.8, "note": "classic sample, downscaled to 1600px" },
+  "PB110048.JPG": { "expect": "reject", "note": "pre-cropped quadrat output — must fail cleanly" },
+  "PB110110.JPG": { "expect": "reject", "note": "pre-cropped quadrat output — must fail cleanly" }
+}

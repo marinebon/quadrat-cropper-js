@@ -1,0 +1,13 @@
+{
+  "name": "quadrat-cropper-js",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Browser tool that auto-crops photoquadrat images to the square framed by the mint-green PVC quadrat. Pure JS; Node is only used for the detector test suite.",
+  "scripts": {
+    "test": "node --max-old-space-size=4096 tests/run.js",
+    "harness": "node --max-old-space-size=4096 tools/test.js"
+  },
+  "devDependencies": {
+    "jpeg-js": "^0.4.4"
+  }
+}

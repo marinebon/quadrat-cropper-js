@@ -8,13 +8,17 @@
  *  1. Downscale source to a working resolution (~1152 px wide).
  *  2. Build a "PVC-green" mask based on measured hue/sat/value bands
  *     (quadrat PVC is mint green, hue ~135-150 deg).
- *  3. Cast rays from the mask centroid outward; the first sufficiently long
- *     run of mask pixels along each ray marks a point on an INNER edge of
- *     the quadrat opening (ignores small moss specks / outer structure).
- *  4. Sequential RANSAC fits up to 4 inner-edge lines; group them into two
+ *  3. Grow the mask through bright, weakly-tinted "highlight" pixels (direct
+ *     sun blows the mint PVC out to near-white; the fill is bounded by the
+ *     masked rims of the tube).
+ *  4. Cast rays from the deepest inscribed point of the opening; the first
+ *     sufficiently long run of mask pixels along each ray (gap-tolerant)
+ *     marks a point on an INNER edge of the quadrat opening (ignores small
+ *     moss specks / outer structure).
+ *  5. Sequential RANSAC fits up to 6 inner-edge lines; group them into two
  *     orientation families (mod PI on tangent angle) and pick best pair each.
- *  5. Inner corners = intersections of the 4 chosen consecutive lines.
- *  6. Confidence: per-edge support, tube-width consistency, squareness,
+ *  6. Inner corners = intersections of the 4 chosen consecutive lines.
+ *  7. Confidence: per-edge support, tube-width consistency, squareness,
  *     parallelism, PVC coverage outside the opening, opening cleanliness,
  *     and absolute-size sanity.
  */
@@ -101,6 +105,105 @@
       }
     }
     return { mask: mask, centroid: cnt > 32 ? { x: cx / cnt, y: cy / cnt } : null, count: cnt };
+  }
+
+  /**
+   * Direct-sun shots blow the mint PVC out to near-white (sat < 0.1, value 1),
+   * so only thin shaded rims classify as mint and the ray casting loses whole
+   * sides.  Grow the mask from classified-mint pixels through "highlight"
+   * pixels (bright + weakly tinted toward mint) — the tube body is bounded by
+   * its two masked rims, and interior/exterior rock is either too saturated
+   * or too dark to qualify, so the fill stays on the PVC.
+   */
+  function floodHighlights(mask, W, H, scaled) {
+    var d = scaled.data, n = W * H;
+    var queue = new Int32Array(n), head = 0, tail = 0;
+    for (var i = 0; i < n; i++) if (mask[i]) queue[tail++] = i;
+    while (head < tail) {
+      var i2 = queue[head++];
+      var x = i2 % W, y = (i2 / W) | 0;
+      for (var k = 0; k < 4; k++) {
+        var nx = x + (k === 0 ? -1 : k === 1 ? 1 : 0);
+        var ny = y + (k === 2 ? -1 : k === 3 ? 1 : 0);
+        if (nx < 0 || ny < 0 || nx >= W || ny >= H) continue;
+        var j = ny * W + nx;
+        if (mask[j]) continue;
+        var p = j * 4;
+        var r = d[p] / 255, g = d[p + 1] / 255, b = d[p + 2] / 255;
+        var mx = r > g ? (r > b ? r : b) : (g > b ? g : b);
+        var mn = r < g ? (r < b ? r : b) : (g < b ? g : b);
+        var v = mx, s = mx > 0 ? (mx - mn) / mx : 0, h = -1;
+        if (mx !== mn) {
+          var df = mx - mn;
+          if (mx === r) h = 60 * ((g - b) / df) % 360;
+          else if (mx === g) h = 60 * ((b - r) / df) + 120;
+          else h = 60 * ((r - g) / df) + 240;
+          if (h < 0) h += 360;
+        }
+        // bright, weakly tinted (or fully blown neutral) — highlight candidate
+        if (v >= 0.6 && s <= 0.25 && (h < 0 || (h >= 100 && h <= 200))) {
+          mask[j] = 1;
+          queue[tail++] = j;
+        }
+      }
+    }
+  }
+
+  /**
+   * Deepest point of the open interior: chamfer distance transform over the
+   * mask (0 at green pixels and at the image border), then the mean of all
+   * near-maximum cells. Unlike the mask centroid this resists green blobs
+   * outside the opening (e.g. a PVC side-arm or big tube structures) which
+   * would otherwise pull the ray origin into/behind a tube.
+   * Returns { x, y, clearance(px) } or null when there is no free area.
+   */
+  function interiorPeak(mask, W, H) {
+    var INF = 0x7fff;
+    var d = new Int16Array(W * H);
+    var i, x, y;
+    for (i = 0; i < d.length; i++) d[i] = mask[i] ? 0 : INF;
+    for (x = 0; x < W; x++) { d[x] = 0; d[(H - 1) * W + x] = 0; }
+    for (y = 0; y < H; y++) { d[y * W] = 0; d[y * W + W - 1] = 0; }
+    // forward chamfer (3 = orthogonal, 4 = diagonal)
+    for (y = 1; y < H; y++) {
+      for (x = 1; x < W - 1; x++) {
+        var v = d[y * W + x];
+        if (!v) continue;
+        var m = v;
+        if (d[y * W + x - 1] + 3 < m) m = d[y * W + x - 1] + 3;
+        if (d[(y - 1) * W + x - 1] + 4 < m) m = d[(y - 1) * W + x - 1] + 4;
+        if (d[(y - 1) * W + x] + 3 < m) m = d[(y - 1) * W + x] + 3;
+        if (d[(y - 1) * W + x + 1] + 4 < m) m = d[(y - 1) * W + x + 1] + 4;
+        d[y * W + x] = m;
+      }
+    }
+    // backward chamfer
+    for (y = H - 2; y >= 0; y--) {
+      for (x = W - 2; x >= 1; x--) {
+        var v2 = d[y * W + x];
+        if (!v2) continue;
+        var m2 = v2;
+        if (d[y * W + x + 1] + 3 < m2) m2 = d[y * W + x + 1] + 3;
+        if (d[(y + 1) * W + x + 1] + 4 < m2) m2 = d[(y + 1) * W + x + 1] + 4;
+        if (d[(y + 1) * W + x] + 3 < m2) m2 = d[(y + 1) * W + x] + 3;
+        if (d[(y + 1) * W + x - 1] + 4 < m2) m2 = d[(y + 1) * W + x - 1] + 4;
+        d[y * W + x] = m2;
+      }
+    }
+    var maxd = 0;
+    for (var j = 0; j < d.length; j++) if (d[j] > maxd) maxd = d[j];
+    if (maxd === 0) return null;
+    var thr = maxd - 2, sx = 0, sy = 0, n = 0;
+    for (var j2 = 0; j2 < d.length; j2++) {
+      if (d[j2] >= thr) { sx += j2 % W; sy += (j2 / W) | 0; n++; }
+    }
+    if (!n) return null;
+    return { x: sx / n, y: sy / n, clearance: maxd / 3 };
+  }
+
+  /** Mask post-processing hook (currently: highlight-aware tube fill). */
+  function floodHints(mk, scaled, opts) {
+    floodHighlights(mk.mask, scaled.width, scaled.height, scaled);
   }
 
   function castRays(scaled, mask, center, opts) {
@@ -247,7 +350,17 @@
     var W = scaled.width, H = scaled.height;
 
     var mk = buildMask(scaled, opts);
+    floodHints(mk, scaled, opts);
+    // Ray origin: the deepest inscribed point of the opening when there is
+    // enough free area, else the mask centroid.  The centroid is biased by
+    // whatever green structures lie near/over the frame (e.g. a PVC side-arm
+    // lying inside the opening or thick tubes), which starves whole sides of
+    // rays and leaves RANSAC without opposing edges; the inscribed peak
+    // restores an even ray distribution.
     var center = mk.centroid || { x: W / 2, y: H / 2 };
+    var peak = interiorPeak(mk.mask, W, H);
+    var peakUsed = false;
+    if (peak && peak.clearance >= 6) { center = peak; peakUsed = true; }
 
     var rays = castRays(scaled, mk.mask, center, opts).filter(Boolean);
 
@@ -255,8 +368,13 @@
     if (rays.length < opts.nRays * 0.4) {
       var opts2 = Object.assign({}, opts, { nRays: opts.nRays * 2, satMin: opts.satMin * 0.8, valMin: Math.max(0.05, opts.valMin * 0.8) });
       var mk2 = buildMask(scaled, opts2);
-      var rays2 = castRays(scaled, mk2.mask, center, opts2).filter(Boolean);
-      if (rays2.length > rays.length) { rays = rays2; mk = mk2; }
+      floodHints(mk2, scaled, opts2);
+      var peak2 = interiorPeak(mk2.mask, W, H);
+      var center2 = (peak2 && peak2.clearance >= 6) ? peak2 : (mk2.centroid || { x: W / 2, y: H / 2 });
+      var rays2 = castRays(scaled, mk2.mask, center2, opts2).filter(Boolean);
+      if (rays2.length > rays.length) {
+        rays = rays2; mk = mk2; center = center2; peakUsed = !!peak2;
+      }
     }
 
     var hitPts = rays.map(function (r) { return { x: r.x, y: r.y, run: r.run }; });
@@ -266,6 +384,8 @@
       ok: false, confidence: 0, quad: null, scaledQuad: null,
       metrics: {}, flags: [], confParts: {},
       center: center, greenMask: mk.mask, scaled: scaled, scale: scale,
+      _rays: rays,
+      centerIsInscribed: peakUsed, clearance: peakUsed ? +peak.clearance.toFixed(1) : null,
       lines: lines.map(function (l) {
         return { n: l.n, d: l.d, dir: l.dir, c: l.c, spread: l.spread,
                  nInl: l.inliers ? l.inliers.length : 0, pts: l.inliers };

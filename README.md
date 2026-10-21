@@ -91,22 +91,48 @@ Node validation harness:
 1. Downscale to ~1152 px working width.
 2. Build an HSV "mint-PVC" mask (hue 118–172°, sat ≥ 0.13, val ≥ 0.045 —
    tolerant of shadow) with 7×7-majority filtering.
-3. Cast 128 rays from the green-mask centroid; the first long-enough run of
-   mask pixels along each ray (gap-tolerant) marks an inner-edge point of the
-   opening.
-4. Sequential RANSAC fits up to 6 lines; they are grouped into two
+3. Flood the mask through bright, weakly-tinted "highlight" pixels (direct-sun
+   shots blow the PVC out to near-white; the fill is bounded by masked rims).
+4. Cast 128 rays from the deepest inscribed point of the opening (distance
+   transform — the mask centroid is biased by green structures near the frame);
+   the first sufficiently long run of mask pixels along each ray (gap-tolerant)
+   marks an inner-edge point of the opening.
+5. Sequential RANSAC fits up to 6 lines; they are grouped into two
    perpendicular orientation families (k-means on circular angle) and the best
    pair from each is scored into quadrilaterals (support, tube-width
    consistency, side-length squareness, parallelism, plus a "just inside must
    be non-PVC / just outside must be PVC" opening probe).
-5. Per-edge refinement walks *inward* from each line and trims residual
+6. Per-edge refinement walks *inward* from each line and trims residual
    inward-side bias, plus a light uniform margin — directional analysis of the
    mint color profile along each normal.
-6. Confidence score (support, tube CV, squareness, parallelism, PVC coverage
+7. Confidence score (support, tube CV, squareness, parallelism, PVC coverage
    inside/outside, size sanity) drives the green/amber/red highlighting.
 
 Pre-cropped images (already-square outputs) are rejected: no straight frame
 edges present → flagged "no frame found" rather than crop-garbage.
+
+## Tests
+
+```bash
+npm install
+npm test          # runs the regression suite in tests/
+```
+
+`tests/` contains real captured fixtures with expectations in
+`tests/expected.json`:
+
+- **"crop"** cases must detect the opening: `ok`, confidence ≥ threshold,
+  near-square quad fitting inside the image. Includes the deliberately hard
+  `P1120593.JPG` / `P1120605.JPG` — direct-sun shots where the PVC is blown
+  out white and side-arm pipes cross the opening interior.
+- **"reject"** cases are pre-cropped quadrat outputs that must fail cleanly
+  (no forced crop of an already-cropped image).
+
+`npm test` exits non-zero on failure; CI (`.github/workflows/test.yml`) runs
+it on every push/PR. `npm run harness` dumps overlay/crop imagery for a whole
+folder into `tools/results/` for visual inspection, and
+`node tools/qdbg.js <image>…` prints per-stage diagnostics (ray hits, fitted
+lines, orientation families, combo rejections).
 
 ## Validation harness (Node)
 
@@ -115,9 +141,8 @@ pre-cropped negatives, writing overlays (`_ov.jpg`: mask tint + fitted quad)
 and square crops (`_crop.jpg`) plus `summary.json` into `results/`:
 
 ```bash
-cd tools
-npm install jpeg-js
-node --max-old-space-size=4096 test.js /path/to/raw  # or edit paths in test.js
+npm install                    # jpeg-js (from the repo root)
+npm run harness /path/to/raw   # or edit paths in tools/test.js
 ```
 
 Current validation: 13/13 raw positives pass (conf 0.96–1.00), 4/4 pre-cropped
@@ -139,7 +164,10 @@ js/unzip.js         in-browser ZIP reader (STORE + DEFLATE via DecompressionStre
 js/export.js        ZIP writer (STORE), manifest CSV, review.json
 js/exif.js          minimal JPEG EXIF reader
 js/metadata.js      filename parsing (date/site/group/code) + CSV join
-tools/test.js       Node validation harness (jpeg-js)
+tests/run.js        regression suite (npm test; also run by CI)
+tests/images/       captured fixtures + expected.json
+tools/test.js       visual debug harness — overlays, crops, summary.json
+tools/qdbg.js       per-stage detector diagnostics for one or more images
 ```
 
 ## Notes & limitations
