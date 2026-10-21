@@ -39,14 +39,6 @@ have a separate manual):
   homogeneous lighting, and no tide pools in shot. A field-sheet photo closes
   each level; species shots are later uploaded to
   [iNaturalist](https://www.inaturalist.org/).
-- **Image management**: photos go up to a shared P2P Drive structure ordered
-  by **country / year / season / locality / site / level** (do not rename or
-  delete). This tool's CSV joining + the manifest's
-  date/site/group/code columns follow that same hierarchy.
-- **Analysis**: images are scored for **percent cover** of species and
-  functional groups using **[CATAMI](https://catami.org/)** categories
-  (Althaus et al. 2015), with AI-assisted workflows — for which the square
-  crops this tool produces are the intended input.
 
 ## Quick start
 
