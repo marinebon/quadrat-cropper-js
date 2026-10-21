@@ -12,6 +12,12 @@ with any static web server, or host it on any static host (GitHub Pages, etc).
 
 ## Quick start
 
+The app is already live at
+**<https://marinebon.org/quadrat-cropper-js/>** (GitHub Pages from `main`,
+pushes deploy automatically).
+
+To run it locally:
+
 ```bash
 cd quadrat-cropper-js
 python3 -m http.server 8080
@@ -62,8 +68,10 @@ setup inline — including a click-to-copy of this page's origin:
 2. Enable the **Google Drive API** and **Google Picker API**.
 3. Create an **OAuth 2.0 Client ID** (type *Web application*).
    Add authorized JavaScript origins:
-   - `http://localhost:8080`
-   - and your deployed origin (e.g. the final hosting URL).
+   - `https://marinebon.org` — the deployed site (scheme + host only, no path;
+     the app's ⚙ dialog shows and copies the running origin for you)
+   - `http://localhost:8080` — if you develop locally
+   
    No redirect URI is needed (this uses the implicit token flow).
 4. Click **⚙** in the app header, paste the Client ID, save.
 5. Use **⊕ Add from Google Drive** (Picker → choose a folder or image), or paste
