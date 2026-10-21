@@ -163,3 +163,10 @@ main { padding: 16px; }
 .preview-body pre { max-width: 300px; max-height: 70vh; overflow: auto; }
 
 .foot { padding: 10px 16px 20px; }
+.foot-line { display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: center; }
+.foot a { color: var(--accent, #6cb2ff); text-decoration: none; display: inline-flex;
+          align-items: center; gap: 5px; }
+.foot a:hover { text-decoration: underline; }
+.gh-icon { width: 14px; height: 14px; fill: currentColor; opacity: 0.9; }
+.foot-open { border: 1px solid var(--line); border-radius: 10px; padding: 0 8px;
+             font-size: 11px; }
