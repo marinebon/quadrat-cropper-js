@@ -68,6 +68,9 @@
   <p>This app finds the mint-green PVC quadrat in each photo and crops the
      square opening (25 × 25 cm) automatically. Low-confidence crops are flagged
      so you can drag the corner markers yourself.</p>
+  <p class="small">It is built for the <b>MBON Pole to Pole</b> network's
+     standardized rocky-shore photo-quadrat protocol — see
+     <a href="https://marinebon.org/p2p/" target="_blank" rel="noopener">marinebon.org/p2p</a>.</p>
   <h3>Getting images in — any one of:</h3>
   <ol>
     <li><b>Drag &amp; drop</b> image files onto the page.</li>
@@ -101,9 +104,24 @@
         crops plus a spreadsheet with date / site / group / confidence / EXIF
         and any .csv columns.</li>
   </ol>
-  <p class="muted small">Tips: a camera distance of ~0.45 m works best; the
-     frame should be fully inside the photo. Pre-cropped images (no green
-     frame) are rejected rather than guessed.</p>
+  <p class="muted small">Best results follow the P2P protocol as-designed:
+     the camera 42 cm above the surface, whole quadrat inside the photo,
+     the frame shaded for even lighting, and no tide pools in shot.
+     Pre-cropped images (no green frame) are rejected rather than guessed.</p>
+  <h3>These photo-quadrats follow the MBON Pole to Pole protocol</h3>
+  <p class="small">Your crops feed directly into the network's standardized
+     rocky-shores monitoring: a 20 mm PVC frame with an Olympus TG-6/7 camera
+     mounted <b>42 cm</b> above the surface photographs a <b>25 × 25 cm</b>
+     opening; 40–60 photo-quadrats are taken per intertidal level
+     (3 levels per site, 3 sites &gt; 1 km apart per locality), later analyzed
+     for percent cover with
+     <a href="https://catami.org/" target="_blank" rel="noopener">CATAMI</a> categories,
+     with AI-assisted processing — which is what the auto-cropping here enables.</p>
+  <p class="small"><b>Protocol &amp; network:</b>
+     <a href="https://marinebon.org/p2p/" target="_blank" rel="noopener">marinebon.org/p2p</a> —
+     <a href="https://marinebon.org/p2p/protocols/Protocol%20MBON%20&amp;%20AMPs_V3_2025.pdf" target="_blank" rel="noopener">field manual (EN)</a> ·
+     <a href="https://marinebon.org/p2p/protocols/Protocolo%20MBON%20&amp;%20AMPs_V2.pdf" target="_blank" rel="noopener">manual de campo (ES)</a> ·
+     <a href="https://doi.org/10.25607/OBP-2014.3" target="_blank" rel="noopener">DOI 10.25607/OBP-2014.3</a>.</p>
   <p>This tool is <b>open source</b> —
      <a href="https://github.com/marinebon/quadrat-cropper-js" target="_blank" rel="noopener">view the code on GitHub</a>
      or <a href="https://github.com/marinebon/quadrat-cropper-js/issues" target="_blank" rel="noopener">report an image that fails</a>
@@ -201,6 +219,10 @@
     <a href="https://github.com/marinebon/quadrat-cropper-js/issues" target="_blank" rel="noopener"
        title="Something look wrong? A bad crop, a missed frame, a bug? Tell us here">
        report an image that fails</a>
+    <span>·</span>
+    <a href="https://marinebon.org/p2p/protocols/Protocol%20MBON%20&amp;%20AMPs_V3_2025.pdf" target="_blank" rel="noopener"
+       title="MBON Pole to Pole: sampling protocol for monitoring marine biodiversity on rocky shores (EN, also available in Spanish at marinebon.org/p2p)">
+       photo-quadrat protocol (MBON P2P)</a>
   </div>
 </footer>
 

@@ -10,6 +10,44 @@ a metadata manifest.
 **No build step, no installation** — it is plain HTML + JS; serve the folder
 with any static web server, or host it on any static host (GitHub Pages, etc).
 
+## The MBON Pole to Pole protocol
+
+These photo-quadrats come from the **[MBON Pole to Pole](https://marinebon.org/p2p/)**
+(P2P) network of the Americas, whose standardized low-cost protocol monitors
+sessile invertebrates and macroalgae on rocky shores
+([sandy beaches](https://repository.oceanbestpractices.org/handle/11329/1145)
+have a separate manual):
+
+- **Field manual**: *"Sampling protocol for monitoring marine biodiversity on
+  rocky shores"* — Montes, Bravo & Bigatti (2025), 3rd edition, in
+  [English](https://marinebon.org/p2p/protocols/Protocol%20MBON%20&%20AMPs_V3_2025.pdf)
+  and
+  [Spanish](https://marinebon.org/p2p/protocols/Protocolo%20MBON%20&%20AMPs_V2.pdf),
+  DOI [10.25607/OBP-2014.3](https://doi.org/10.25607/OBP-2014.3), also archived in the
+  [Ocean Best Practices System](https://repository.oceanbestpractices.org/handle/11329/1143).
+  Developed through participatory workshops (Camarones 2023, Ushuaia 2024,
+  Puerto Madryn / Puerto Pirámides 2025) with park rangers, scientists and
+  coastal communities.
+- **The frame**: a 20 mm thermo-fusion (Fusiogas-type) PVC structure holds an
+  **Olympus TG-6/7** camera (1/4"-20 UNC, 25 mm screw; 12 MP; built-in GPS)
+  **42 cm** above the substrate, photographing the **25 × 25 cm** opening —
+  exactly the square this tool auto-crops.
+- **Sampling design**: 3 sites per locality (> 1 km apart), 3 intertidal
+  levels each (high / mid / low; barnacles, mussels, macroalgae as indicators),
+  **40–60 photo-quadrats per level**, walking > 100 m at low tide; camera
+  horizontal or inclined up to 40° (no vertical walls), the quadrat shaded for
+  homogeneous lighting, and no tide pools in shot. A field-sheet photo closes
+  each level; species shots are later uploaded to
+  [iNaturalist](https://www.inaturalist.org/).
+- **Image management**: photos go up to a shared P2P Drive structure ordered
+  by **country / year / season / locality / site / level** (do not rename or
+  delete). This tool's CSV joining + the manifest's
+  date/site/group/code columns follow that same hierarchy.
+- **Analysis**: images are scored for **percent cover** of species and
+  functional groups using **[CATAMI](https://catami.org/)** categories
+  (Althaus et al. 2015), with AI-assisted workflows — for which the square
+  crops this tool produces are the intended input.
+
 ## Quick start
 
 The app is already live at
@@ -178,9 +216,9 @@ tools/qdbg.js       per-stage detector diagnostics for one or more images
   cross-origin; filename-based metadata won't join for those items. Anonymous
   **folder** listing is not possible (Google requires sign-in) — use the .zip
   drop or the one-time sign-in instead.
-- Top-down camera only (metadata says 0.45 m shooting distance); the detector
-  still reports far-from-square openings as low confidence instead of forcing
-  a wrong crop.
+- Camera 42 cm above the substrate per the P2P protocol (horizontal or up
+  to 40° inclination): the detector reports far-from-square openings as low
+  confidence instead of forcing a wrong crop.
 - Images where the frame is partly outside the picture are handled (edge
   support flag) but the crop will be missing that side.
 - Chile/northern-Hemisphere dark rock shots with heavy algae: the opening

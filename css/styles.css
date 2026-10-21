@@ -166,6 +166,7 @@ main { padding: 16px; }
 .foot-line { display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: center; }
 .foot a { color: var(--accent, #6cb2ff); text-decoration: none; display: inline-flex;
           align-items: center; gap: 5px; }
+.dialog a { color: var(--accent, #6cb2ff); }
 .foot a:hover { text-decoration: underline; }
 .gh-icon { width: 14px; height: 14px; fill: currentColor; opacity: 0.9; }
 .foot-open { border: 1px solid var(--line); border-radius: 10px; padding: 0 8px;
