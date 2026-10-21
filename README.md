@@ -131,10 +131,15 @@ Node validation harness:
    dark sticker on the tube). A raw deepest-chamfer selection is not enough:
    the mask centroid is biased, and on yellow frames barnacle-cream specks
    inside the opening shred its inscribed radius so an exterior rock pocket
-   can win by depth. From the origin, the first sufficiently long run of mask
-   pixels along each ray (gap-tolerant) marks an inner-edge point of the
-   opening.
-5. Sequential RANSAC fits up to 6 lines; they are grouped into two
+   can win by depth. Mask components lying entirely inside the pocket
+   (barnacle cream, alga clumps — real tube structures always connect to the
+   ring) are stripped so they cannot steal rays, and the origin is anchored
+   on the free floor near the pocket's area centroid. From the origin, each
+   ray keeps up to two sufficiently long runs of mask pixels (gap-tolerant;
+   a ray blocked by interior clutter still contributes a tube-rim point)
+   and marks inner-edge points of the opening.
+5. Sequential RANSAC fits up to 8 lines, merging parallel near-duplicates
+   (the inner and outer rims of the same tube); they are grouped into two
    perpendicular orientation families (k-means on circular angle) and the best
    pair from each is scored into quadrilaterals (support, tube-width
    consistency, side-length squareness, parallelism, plus a "just inside must

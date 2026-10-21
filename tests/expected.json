@@ -5,6 +5,7 @@
   "P1120589.JPG": { "expect": "crop", "minConf": 0.8, "note": "classic sample, downscaled to 1600px" },
   "P1120599.JPG": { "expect": "crop", "minConf": 0.8, "note": "classic sample, downscaled to 1600px" },
   "AP161685.JPG": { "expect": "crop", "minConf": 0.8, "note": "MONTEMAR yellow quadrat, shaded with white label breaching the tube (drives the yellow pass + ring-closing interior peak)" },
+  "AP161633.JPG": { "expect": "crop", "minConf": 0.8, "note": "MONTEMAR MEDIO yellow quadrat, interior ulva/barnacle clumps fused to the tube (drives interior-blob strip + two-candidate rays + duplicate-line merge)" },
   "PB110048.JPG": { "expect": "reject", "note": "pre-cropped quadrat output — must fail cleanly" },
   "PB110110.JPG": { "expect": "reject", "note": "pre-cropped quadrat output — must fail cleanly" }
 }

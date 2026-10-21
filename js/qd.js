@@ -12,11 +12,12 @@
  *  3. Grow the mask through bright, weakly-tinted "highlight" pixels (direct
  *     sun blows the mint PVC out to near-white; the fill is bounded by the
  *     masked rims of the tube).
- *  4. Cast rays from the deepest inscribed point of the opening; the first
- *     sufficiently long run of mask pixels along each ray (gap-tolerant)
- *     marks a point on an INNER edge of the quadrat opening (ignores small
- *     moss specks / outer structure).
- *  5. Sequential RANSAC fits up to 6 inner-edge lines; group them into two
+ *  4. Cast rays from the open interior's origin (deepest enclosed pocket,
+ *     interior clutter stripped away); each ray keeps up to two sufficiently
+ *     long mask runs (gap-tolerant) as points on INNER edges of the quadrat
+ *     opening (ignores small moss specks / outer structure).
+ *  5. Sequential RANSAC fits up to 8 inner-edge lines, merging parallel
+ *     near-duplicates (the two rims of the same tube); group them into two
  *     orientation families (mod PI on tangent angle) and pick best pair each.
  *  6. Inner corners = intersections of the 4 chosen consecutive lines.
  *  7. Confidence: per-edge support, tube-width consistency, squareness,
@@ -62,10 +63,11 @@
     yellow: {
       color: 'yellow',
       // measured on MONTEMAR yellow PVC: hue 47-66 p10-p90 in sun, up to ~74
-      // in shade; shaded tube sat drops to ~0.17-0.30, so satMin 0.20.
-      // Pale sand / pearl-barnacle cream shares hue 40-70 but s mostly < 0.2
-      // and is speckled, not a continuous tube run — the structural scoring
-      // (RANSAC + opening probes) rejects stray blobs.
+      // in shade, so satMin 0.20. Pale sand / pearl-barnacle cream (hue 40-70)
+      // stays in band but is speckled — the structural scoring rejects it.
+      // hueMax can't drop below ~82: BAJO/MEDIO tubes reach hue ~80, and
+      // green ulva begins at ~74, so hue alone cannot split tube from alga —
+      // the structural scoring (RANSAC + opening probes) prunes instead.
       hueMin: 42, hueMax: 82, satMin: 0.20, valMin: 0.35,
       highlightHueMin: 25, highlightHueMax: 95,
     },
@@ -215,6 +217,40 @@
   }
 
   /**
+   * Zero out mask components that lie ENTIRELY inside the enclosed pocket
+   * (they are interior clutter — barnacle cream, alga patches — not tube;
+   * any structure attached to the frame's ring pokes out of the pocket and
+   * is kept). Returns true when anything was removed.
+   */
+  function stripPocketBlobs(mask, W, H, plbl, pid) {
+    var N = mask.length;
+    var seen = new Uint8Array(N);
+    var stack = new Int32Array(N);
+    var comp = new Int32Array(N);
+    var removed = false;
+    for (var s0 = 0; s0 < N; s0++) {
+      if (!mask[s0] || seen[s0] || plbl[s0] !== pid) continue;
+      var head = 0, tail = 0, n = 0, inPocket = true;
+      stack[tail++] = s0; seen[s0] = 1;
+      while (head < tail) {
+        var c = stack[head++];
+        comp[n++] = c;
+        if (plbl[c] !== pid) inPocket = false;
+        var cx = c % W, cy = (c / W) | 0;
+        if (cx > 0 && mask[c - 1] && !seen[c - 1]) { seen[c - 1] = 1; stack[tail++] = c - 1; }
+        if (cx < W - 1 && mask[c + 1] && !seen[c + 1]) { seen[c + 1] = 1; stack[tail++] = c + 1; }
+        if (cy > 0 && mask[c - W] && !seen[c - W]) { seen[c - W] = 1; stack[tail++] = c - W; }
+        if (cy < H - 1 && mask[c + W] && !seen[c + W]) { seen[c + W] = 1; stack[tail++] = c + W; }
+      }
+      if (inPocket) {
+        for (var k = 0; k < n; k++) mask[comp[k]] = 0;
+        removed = true;
+      }
+    }
+    return removed;
+  }
+
+  /**
    * Deepest point of the open interior. Chamfer distance transform over the
    * mask (0 at tube pixels and at the image border); among deep candidate
    * cells pick the most ring-enclosed pocket (see below), then average the
@@ -319,19 +355,50 @@
       }
       if (!bestComp) continue;
 
-      // deepest raw-mask free cells inside the winning component
-      var sxb = 0, syb = 0, nb = 0, maxdb = 0;
+      // Origin = the pocket's AREA centroid — robust when the interior is
+      // littered with in-band barnacle/alga specks, which pull the deepest
+      // chamfer plateau toward whichever corner has the cleanest floor and
+      // starve the facing tube of rays. Fall back to the deepest plateau
+      // cells when the centroid is outside the free area or hugs a wall.
+      var cxs = 0, cys = 0, cn = 0;
+      for (var j8 = 0; j8 < lbl.length; j8++) {
+        if (lbl[j8] !== bestComp) continue;
+        cxs += j8 % W; cys += (j8 / W) | 0; cn++;
+      }
+      if (!cn) continue;
+      var gx0 = Math.round(cxs / cn), gy0 = Math.round(cys / cn);
+      var maxdb = 0;
       for (var j6 = 0; j6 < d.length; j6++) {
         if (lbl[j6] !== bestComp || mask[j6]) continue; // raw chamfer only valid on raw-free px
         if (d[j6] > maxdb) maxdb = d[j6];
       }
-      var thrb = maxdb - 2;
-      for (var j7 = 0; j7 < d.length; j7++) {
-        if (lbl[j7] !== bestComp || mask[j7] || d[j7] < thrb) continue;
-        sxb += j7 % W; syb += (j7 / W) | 0; nb++;
+      // anchor on the free floor near the centroid: walk outward from the
+      // centroid collecting the deepest cells within an expanding radius
+      // (the exact centroid cell itself may sit on an in-band alga patch)
+      var sxb = 0, syb = 0, nb = 0, R = (maxdb / 3) * 0.35;
+      while (R < maxdb) {
+        var thrb2 = 0, cand = 0;
+        for (var j7 = 0; j7 < d.length; j7++) {
+          if (lbl[j7] !== bestComp || mask[j7]) continue;
+          var qx = j7 % W, qy = (j7 / W) | 0;
+          if ((qx - gx0) * (qx - gx0) + (qy - gy0) * (qy - gy0) > R * R) continue;
+          if (d[j7] > thrb2) thrb2 = d[j7];
+          cand++;
+        }
+        if (!cand) { R *= 1.6; continue; }
+        // mean of the deepest cells inside the radius
+        for (var j9 = 0; j9 < d.length; j9++) {
+          if (lbl[j9] !== bestComp || mask[j9] || d[j9] < thrb2 - 2) continue;
+          var qx2 = j9 % W, qy2 = (j9 / W) | 0;
+          if ((qx2 - gx0) * (qx2 - gx0) + (qy2 - gy0) * (qy2 - gy0) > R * R) continue;
+          sxb += qx2; syb += qy2; nb++;
+        }
+        if (nb) break;
+        R *= 1.6; // extra safety (thrb2 found cells must exist, but guard anyway)
       }
       if (!nb) continue;
-      bestPeak = { x: sxb / nb, y: syb / nb, clearance: maxdb / 3, enclosed: true };
+      bestPeak = { x: sxb / nb, y: syb / nb, clearance: maxdb / 3, enclosed: true,
+                   pocketLbl: lbl, pocketId: bestComp };
     }
     if (bestPeak) return bestPeak;
 
@@ -400,6 +467,14 @@
     floodHighlights(mk.mask, scaled.width, scaled.height, scaled, opts);
   }
 
+  /**
+   * Cast rays from `center`; up to two qualifying mask crossings are kept per
+   * ray (the first, which in a blob-littered interior may be an in-band
+   * alga/barnacle patch, and the next) so a ray blocked by interior clutter
+   * still contributes a tube-rim point. Wrong candidates are pruned later by
+   * the opening probes / quad scoring. Rays that ride a tube to the image
+   * border get a borderRun hit (frame continues off-image).
+   */
   function castRays(scaled, mask, center, opts) {
     var W = scaled.width, H = scaled.height;
     var minRun = Math.max(4, opts.minRunSw * Math.sqrt(W * H));
@@ -410,7 +485,7 @@
       var th = (k / opts.nRays) * 2 * Math.PI;
       var dx = Math.cos(th), dy = Math.sin(th);
       var firstT = -1, greenTot = 0, gap = 0, band = [];
-      var hit = null;
+      var found1 = null; // first accepted crossing along this ray
       for (var t = step; t < maxDim; t += step) {
         var xi = (center.x + dx * t) | 0, yi = (center.y + dy * t) | 0;
         if (xi < 0 || yi < 0 || xi >= W || yi >= H) break; // left image: frame continuing off-frame
@@ -425,7 +500,14 @@
           if (gap > gapTol) {
             if (greenTot >= minRun) {
               // accepting crossing: inner-edge point = first mask pixel along ray
-              hit = { x: center.x + dx * firstT, y: center.y + dy * firstT, run: greenTot, band: band, angle: th };
+              var cand = { x: center.x + dx * firstT, y: center.y + dy * firstT, run: greenTot, band: band, angle: th };
+              if (!found1) {
+                found1 = cand;
+                firstT = -1; greenTot = 0; gap = 0; band = [];
+                continue;
+              }
+              hits.push(found1); hits.push(cand);
+              found1 = null;
               break;
             }
             // rejected crossing (too small = speck): re-arm
@@ -434,10 +516,14 @@
         }
       }
       // ray survived to image border inside a tube — treat as reaching frame off-image
-      if (!hit && firstT >= 0 && greenTot >= minRun) {
-        hit = { x: center.x + dx * firstT, y: center.y + dy * firstT, run: greenTot, band: band, angle: th, borderRun: true };
+      if (found1) {
+        if (greenTot >= minRun) found1.borderRun = true;
+        hits.push(found1); // keep the lone first crossing anyway
+      } else if (firstT >= 0 && greenTot >= minRun) {
+        // rode a tube to (or past) the image border without completing a
+        // crossing: frame continues off-image
+        hits.push({ x: center.x + dx * firstT, y: center.y + dy * firstT, run: greenTot, band: band, angle: th, borderRun: true });
       }
-      hits.push(hit);
     }
     return hits;
   }
@@ -466,12 +552,17 @@
     return { x: x, y: y };
   }
 
-  /** Sequential RANSAC over hit points. Returns lines (PCA-fit) sorted by inlier count desc. */
+  /** Sequential RANSAC over hit points. Returns lines (PCA-fit) sorted by inlier count desc.
+   *  Near-duplicate parallel lines (same tube's inner/outer rims) are merged
+   *  into the stronger one via the union of inliers so one tube yields one
+   *  fitted edge; merging distance uses the median ray-crossing run
+   *  (opts.rayMedRun) as a tube-width proxy. */
   function ransacLines(points, opts, W, H) {
     var remaining = points.slice();
     var lines = [];
     var tol = opts.rayTol;
-    for (var iter = 0; iter < 6 && remaining.length >= opts.minSupport; iter++) {
+    var mergeD = Math.max(8, (opts.rayMedRun || 0) * 1.3);
+    for (var iter = 0; iter < 8 && remaining.length >= opts.minSupport; iter++) {
       var best = null;
       for (var i = 0; i < remaining.length; i++) {
         for (var j = i + 1; j < remaining.length; j++) {
@@ -502,6 +593,35 @@
         inliers = inl2;
         l = fitLineFromPoints(inl2);
       }
+      // duplicate-tube merge: parallel to an existing line within a tube width
+      var merged = false;
+      for (var m = 0; m < lines.length; m++) {
+        var e = lines[m];
+        var dotp = Math.abs(e.dir.x * l.dir.x + e.dir.y * l.dir.y);
+        if (dotp < 0.985) continue; // angle deviates > ~10deg
+        if (lineDist(e, l.c) >= mergeD) continue;
+        var union = e.inliers.concat(inliers);
+        lines[m] = refitLine(fitLineFromPoints(union), union);
+        merged = true;
+        break;
+      }
+      function refitLine(base, pts2) {
+        var mn = 1e9, mx = -1e9;
+        for (var s = 0; s < pts2.length; s++) {
+          var pr = (pts2[s].x - base.c.x) * base.dir.x + (pts2[s].y - base.c.y) * base.dir.y;
+          if (pr < mn) mn = pr; if (pr > mx) mx = pr;
+        }
+        base.spread = mx - mn;
+        base.inliers = pts2;
+        return base;
+      }
+      if (merged) {
+        remaining = remaining.filter(function (p) {
+          return lines.every(function (e) { return lineDist(e, p) >= tol; });
+        });
+        continue;
+      }
+      if (inliers.length < opts.minSupport) break;
       var mn = 1e9, mx = -1e9;
       for (var s = 0; s < inliers.length; s++) {
         var pr = (inliers[s].x - l.c.x) * l.dir.x + (inliers[s].y - l.c.y) * l.dir.y;
@@ -584,6 +704,16 @@
     // restores an even ray distribution.
     var center = mk.centroid || { x: W / 2, y: H / 2 };
     var peak = interiorPeak(mk.mask, W, H);
+    // Barnacle-cream / alga patches inside the color band litter the opening:
+    // they steal rays (their edges seed bogus RANSAC lines) and distort the
+    // origin. With the pocket known, strip mask components that lie fully
+    // inside it (real tube structures always connect to the ring) and
+    // re-derive the origin from the cleaned mask.
+    if (peak && peak.enclosed && peak.pocketId) {
+      if (stripPocketBlobs(mk.mask, W, H, peak.pocketLbl, peak.pocketId)) {
+        peak = interiorPeak(mk.mask, W, H);
+      }
+    }
     var peakUsed = false;
     if (peak && peak.clearance >= 6) { center = peak; peakUsed = true; }
 
@@ -601,6 +731,13 @@
         rays = rays2; mk = mk2; center = center2; peakUsed = !!peak2;
       }
     }
+
+    // tube-width proxy (a 25th-percentile run — tube hit points are the
+    // minority when the opening is blob-littered, so the median would land
+    // inside blob territory); used by the RANSAC duplicate-line merge as
+    // the max offset for the two rims of the same tube.
+    var runs = rays.map(function (r) { return r.run; }).slice().sort(function (a, b) { return a - b; });
+    opts.rayMedRun = runs.length ? runs[Math.floor(runs.length * 0.25)] : 0;
 
     var hitPts = rays.map(function (r) { return { x: r.x, y: r.y, run: r.run }; });
     var lines = ransacLines(hitPts, opts, W, H);
