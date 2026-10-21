@@ -1,7 +1,7 @@
 # Quadrat Cropper (JS)
 
 Browser-based tool that automatically crops photoquadrat images to the square
-interior area framed by the mint-green PVC quadrat (25 × 25 cm). Supports
+interior area framed by the PVC quadrat (mint-green or yellow, 25 × 25 cm). Supports
 individual files, drag & drop batches, and Google Drive (Picker or a pasted
 folder link). Low-confidence detections are flagged for manual review with
 draggable corner markers, and everything exports as a ZIP of square crops plus
@@ -119,14 +119,21 @@ Pure, DOM-free JavaScript module (`js/qd.js`, no dependencies) shared with the
 Node validation harness:
 
 1. Downscale to ~1152 px working width.
-2. Build an HSV "mint-PVC" mask (hue 118–172°, sat ≥ 0.13, val ≥ 0.045 —
-   tolerant of shadow) with 7×7-majority filtering.
+2. Run the pipeline once per known tube color (`FRAME_COLORS`): an HSV mask
+   band for mint PVC (hue 118–172°, sat ≥ 0.13) and for yellow PVC (hue 42–82°,
+   sat ≥ 0.2; kept band-separate so green algae never pollutes a yellow pass
+   and pale sand a mint one). The best-confidence detection wins.
 3. Flood the mask through bright, weakly-tinted "highlight" pixels (direct-sun
    shots blow the PVC out to near-white; the fill is bounded by masked rims).
-4. Cast 128 rays from the deepest inscribed point of the opening (distance
-   transform — the mask centroid is biased by green structures near the frame);
-   the first sufficiently long run of mask pixels along each ray (gap-tolerant)
-   marks an inner-edge point of the opening.
+4. Cast 128 rays from the open interior's origin — chosen as the largest
+   free pocket *enclosed* by the mask (border flood; a morphological
+   ring-closing tolerates a breached frame such as a sun-flared section or a
+   dark sticker on the tube). A raw deepest-chamfer selection is not enough:
+   the mask centroid is biased, and on yellow frames barnacle-cream specks
+   inside the opening shred its inscribed radius so an exterior rock pocket
+   can win by depth. From the origin, the first sufficiently long run of mask
+   pixels along each ray (gap-tolerant) marks an inner-edge point of the
+   opening.
 5. Sequential RANSAC fits up to 6 lines; they are grouped into two
    perpendicular orientation families (k-means on circular angle) and the best
    pair from each is scored into quadrilaterals (support, tube-width
@@ -134,7 +141,7 @@ Node validation harness:
    be non-PVC / just outside must be PVC" opening probe).
 6. Per-edge refinement walks *inward* from each line and trims residual
    inward-side bias, plus a light uniform margin — directional analysis of the
-   mint color profile along each normal.
+   tube color profile along each normal.
 7. Confidence score (support, tube CV, squareness, parallelism, PVC coverage
    inside/outside, size sanity) drives the green/amber/red highlighting.
 

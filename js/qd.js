@@ -6,8 +6,9 @@
  *
  * Approach:
  *  1. Downscale source to a working resolution (~1152 px wide).
- *  2. Build a "PVC-green" mask based on measured hue/sat/value bands
- *     (quadrat PVC is mint green, hue ~135-150 deg).
+ *  2. Build a "PVC" mask from measured hue/sat/value bands, once per known
+ *     tube color (mint green hue ~135-150 deg, or yellow hue ~50-65 deg);
+ *     the best-confidence detection wins.
  *  3. Grow the mask through bright, weakly-tinted "highlight" pixels (direct
  *     sun blows the mint PVC out to near-white; the fill is bounded by the
  *     masked rims of the tube).
@@ -34,6 +35,7 @@
     hueMin: 118, hueMax: 172,
     satMin: 0.13,
     valMin: 0.045,
+    highlightHueMin: 100, highlightHueMax: 200,
     minRunSw: 0.012,
     rayGap: 9,
     rayTol: 2.6,
@@ -41,6 +43,32 @@
     refineIters: 2,
     autoThreshold: 0.80,
     reviewThreshold: 0.55,
+  };
+
+  /**
+   * Known quadrat tube colors.  Each defines the mask hue/sat/value band and
+   * the highlight-tint family used by floodHighlights (sun-blown tube pixels
+   * stay weakly tinted toward their own color).  detectQuadrat runs the full
+   * pipeline once per color and keeps the best-confidence result — the mask
+   * bands never mix, so green algae cannot pollute a yellow pass and pale
+   * sand cannot pollute a mint one.
+   */
+  var FRAME_COLORS = {
+    mint: {
+      color: 'mint',
+      hueMin: 118, hueMax: 172, satMin: 0.13, valMin: 0.045,
+      highlightHueMin: 100, highlightHueMax: 200,
+    },
+    yellow: {
+      color: 'yellow',
+      // measured on MONTEMAR yellow PVC: hue 47-66 p10-p90 in sun, up to ~74
+      // in shade; shaded tube sat drops to ~0.17-0.30, so satMin 0.20.
+      // Pale sand / pearl-barnacle cream shares hue 40-70 but s mostly < 0.2
+      // and is speckled, not a continuous tube run — the structural scoring
+      // (RANSAC + opening probes) rejects stray blobs.
+      hueMin: 42, hueMax: 82, satMin: 0.20, valMin: 0.35,
+      highlightHueMin: 25, highlightHueMax: 95,
+    },
   };
 
   function clamp01(x) { return x < 0 ? 0 : x > 1 ? 1 : x; }
@@ -115,7 +143,7 @@
    * its two masked rims, and interior/exterior rock is either too saturated
    * or too dark to qualify, so the fill stays on the PVC.
    */
-  function floodHighlights(mask, W, H, scaled) {
+  function floodHighlights(mask, W, H, scaled, opts) {
     var d = scaled.data, n = W * H;
     var queue = new Int32Array(n), head = 0, tail = 0;
     for (var i = 0; i < n; i++) if (mask[i]) queue[tail++] = i;
@@ -141,7 +169,9 @@
           if (h < 0) h += 360;
         }
         // bright, weakly tinted (or fully blown neutral) — highlight candidate
-        if (v >= 0.6 && s <= 0.25 && (h < 0 || (h >= 100 && h <= 200))) {
+        // tint family comes from the active tube color (opts.highlightHue*)
+        if (v >= 0.6 && s <= 0.25 &&
+            (h < 0 || (h >= (opts.highlightHueMin || 100) && h <= (opts.highlightHueMax || 200)))) {
           mask[j] = 1;
           queue[tail++] = j;
         }
@@ -149,11 +179,47 @@
     }
   }
 
+  /** Separable box min/max morph op (max=dilate, min=erode), radius r,
+   *  sliding-window deque: O(W*H) regardless of r. */
+  function morphMask(src, W, H, r, useMax) {
+    var tmp = new Uint8Array(W * H), out = new Uint8Array(W * H);
+    var W2 = 2 * r + 1;
+    var dq = new Int32Array(W2 > H ? W2 : H), dqVal = new Uint8Array(W2 > H ? W2 : H);
+    var x, y, head, tail, v;
+    // horizontal pass (deque holds indices of better-valued pixels)
+    for (y = 0; y < H; y++) {
+      head = tail = 0;
+      var off = y * W;
+      for (x = 0; x < W; x++) {
+        v = src[off + x];
+        if (useMax) { while (tail > head && dqVal[(tail - 1) % W2] <= v) tail--; }
+        else { while (tail > head && dqVal[(tail - 1) % W2] >= v) tail--; }
+        dq[tail % W2] = x; dqVal[tail % W2] = v; tail++;
+        while (dq[head % W2] < x - r) head++;
+        tmp[off + x] = dqVal[head % W2];
+      }
+    }
+    // vertical pass
+    for (x = 0; x < W; x++) {
+      head = tail = 0;
+      for (y = 0; y < H; y++) {
+        v = tmp[y * W + x];
+        if (useMax) { while (tail > head && dqVal[(tail - 1) % W2] <= v) tail--; }
+        else { while (tail > head && dqVal[(tail - 1) % W2] >= v) tail--; }
+        dq[tail % W2] = y; dqVal[tail % W2] = v; tail++;
+        while (dq[head % W2] < y - r) head++;
+        out[y * W + x] = dqVal[head % W2];
+      }
+    }
+    return out;
+  }
+
   /**
-   * Deepest point of the open interior: chamfer distance transform over the
-   * mask (0 at green pixels and at the image border), then the mean of all
-   * near-maximum cells. Unlike the mask centroid this resists green blobs
-   * outside the opening (e.g. a PVC side-arm or big tube structures) which
+   * Deepest point of the open interior. Chamfer distance transform over the
+   * mask (0 at tube pixels and at the image border); among deep candidate
+   * cells pick the most ring-enclosed pocket (see below), then average the
+   * cells near its plateau. Unlike the mask centroid this resists tube
+   * blobs outside the opening (e.g. a PVC side-arm or big tube structures) which
    * would otherwise pull the ray origin into/behind a tube.
    * Returns { x, y, clearance(px) } or null when there is no free area.
    */
@@ -193,17 +259,145 @@
     var maxd = 0;
     for (var j = 0; j < d.length; j++) if (d[j] > maxd) maxd = d[j];
     if (maxd === 0) return null;
-    var thr = maxd - 2, sx = 0, sy = 0, n = 0;
-    for (var j2 = 0; j2 < d.length; j2++) {
-      if (d[j2] >= thr) { sx += j2 % W; sy += (j2 / W) | 0; n++; }
+
+    // Free pockets fully enclosed by the mask (not reachable from the image
+    // border through free pixels) are candidate opening interiors. The
+    // deepest pocket alone can lose to an exterior rock pocket — barnacle
+    // cream is inside the yellow band and speckles the opening interior,
+    // shredding its inscribed radius — so enclosed pockets are ranked by
+    // AREA instead (the opening dwarfs any nook between tube and algae).
+    // The enclosure test runs on a morphological CLOSING of the mask, so a
+    // breached ring (sun-flared section, dark sticker on the tube) still
+    // counts as enclosing; the radius escalates only while no sizable
+    // enclosed pocket appears, so a cleanly closed ring is judged as-is.
+    var diag = Math.sqrt(W * H);
+    var minArea = Math.max(1200, 0.012 * W * H);
+    var bestPeak = null;
+    for (var ri = 0; ri <= 4 && !bestPeak; ri++) {
+      var rad = ri === 0 ? 0 : Math.round(diag * (0.007 + 0.005 * (ri - 1)));
+      var ringMask = rad ? morphMask(morphMask(mask, W, H, rad, true), W, H, rad, false) : mask;
+      var lbl = new Int32Array(W * H); // 0 unvisited, 1 escaped-to-border, >=2 comp id
+      var stack = new Int32Array(W * H);
+      var top = 0;
+      for (x = 0; x < W; x++) {
+        if (!ringMask[x]) { lbl[x] = 1; stack[top++] = x; }
+        var b2 = (H - 1) * W + x;
+        if (!ringMask[b2]) { lbl[b2] = 1; stack[top++] = b2; }
+      }
+      for (y = 0; y < H; y++) {
+        var lidx = y * W, ridx = y * W + W - 1;
+        if (!ringMask[lidx]) { lbl[lidx] = 1; stack[top++] = lidx; }
+        if (!ringMask[ridx]) { lbl[ridx] = 1; stack[top++] = ridx; }
+      }
+      while (top > 0) {
+        var i2 = stack[--top];
+        var ix = i2 % W, iy = (i2 / W) | 0;
+        if (ix > 0 && !ringMask[i2 - 1] && !lbl[i2 - 1]) { lbl[i2 - 1] = 1; stack[top++] = i2 - 1; }
+        if (ix < W - 1 && !ringMask[i2 + 1] && !lbl[i2 + 1]) { lbl[i2 + 1] = 1; stack[top++] = i2 + 1; }
+        if (iy > 0 && !ringMask[i2 - W] && !lbl[i2 - W]) { lbl[i2 - W] = 1; stack[top++] = i2 - W; }
+        if (iy < H - 1 && !ringMask[i2 + W] && !lbl[i2 + W]) { lbl[i2 + W] = 1; stack[top++] = i2 + W; }
+      }
+      var nComp = 1, compArea = [0, 0];
+      for (var j5 = 0; j5 < lbl.length; j5++) {
+        if (lbl[j5] || ringMask[j5]) continue;
+        nComp++;
+        var head2 = 0, tail2 = 0;
+        stack[tail2++] = j5; lbl[j5] = nComp;
+        while (head2 < tail2) {
+          var i3 = stack[head2++];
+          compArea[nComp] = (compArea[nComp] || 0) + 1;
+          var ix2 = i3 % W, iy2 = (i3 / W) | 0;
+          if (ix2 > 0 && !ringMask[i3 - 1] && !lbl[i3 - 1]) { lbl[i3 - 1] = nComp; stack[tail2++] = i3 - 1; }
+          if (ix2 < W - 1 && !ringMask[i3 + 1] && !lbl[i3 + 1]) { lbl[i3 + 1] = nComp; stack[tail2++] = i3 + 1; }
+          if (iy2 > 0 && !ringMask[i3 - W] && !lbl[i3 - W]) { lbl[i3 - W] = nComp; stack[tail2++] = i3 - W; }
+          if (iy2 < H - 1 && !ringMask[i3 + W] && !lbl[i3 + W]) { lbl[i3 + W] = nComp; stack[tail2++] = i3 + W; }
+        }
+      }
+      var bestComp = 0, bestArea = minArea; // ignore speck-sized bubbles
+      for (var cc = 2; cc <= nComp; cc++) {
+        if (compArea[cc] > bestArea) { bestArea = compArea[cc]; bestComp = cc; }
+      }
+      if (!bestComp) continue;
+
+      // deepest raw-mask free cells inside the winning component
+      var sxb = 0, syb = 0, nb = 0, maxdb = 0;
+      for (var j6 = 0; j6 < d.length; j6++) {
+        if (lbl[j6] !== bestComp || mask[j6]) continue; // raw chamfer only valid on raw-free px
+        if (d[j6] > maxdb) maxdb = d[j6];
+      }
+      var thrb = maxdb - 2;
+      for (var j7 = 0; j7 < d.length; j7++) {
+        if (lbl[j7] !== bestComp || mask[j7] || d[j7] < thrb) continue;
+        sxb += j7 % W; syb += (j7 / W) | 0; nb++;
+      }
+      if (!nb) continue;
+      bestPeak = { x: sxb / nb, y: syb / nb, clearance: maxdb / 3, enclosed: true };
     }
-    if (!n) return null;
-    return { x: sx / n, y: sy / n, clearance: maxd / 3 };
+    if (bestPeak) return bestPeak;
+
+    // fallback: tube ring still breached (no sizable enclosed pocket) — score deep
+    // pockets by ring enclosure (mask wall reached within ~2 radii;
+    // escapes to the image border score ~0), enclosure dominates the score
+    // and depth tiebreaks.
+    // fallback: dedupe deep cells on a coarse grid to bound ring sampling
+    var thr = Math.max(maxd - 2, (maxd * 0.7) | 0);
+    var seen = new Uint8Array(W * H);
+    var GRID = 8;
+    var GW = ((W / GRID) | 0) + 1;
+    var cands = [];
+    for (var j2 = 0; j2 < d.length; j2++) {
+      if (d[j2] < thr) continue;
+      var gx = ((j2 % W) / GRID) | 0, gy = (((j2 / W) | 0) / GRID) | 0;
+      if (seen[gy * GW + gx]) continue;
+      seen[gy * GW + gx] = 1;
+      cands.push(j2);
+    }
+    if (!cands.length) return null;
+
+    function ringScore(px, py, r) {
+      var K = 24, hits = 0;
+      for (var k = 0; k < K; k++) {
+        var th = (k / K) * 2 * Math.PI;
+        var dx = Math.cos(th), dy = Math.sin(th);
+        var hit = false, escape = false;
+        for (var t = r * 0.75; t <= r * 2.2; t += 3) {
+          var xi = (px + dx * t) | 0, yi = (py + dy * t) | 0;
+          if (xi < 0 || yi < 0 || xi >= W || yi >= H) { escape = true; break; }
+          if (mask[yi * W + xi]) { hit = true; break; }
+        }
+        if (hit && !escape) hits++;
+      }
+      return hits / K;
+    }
+
+    var bestCell = -1, bestScore = -1, bestCov = 0;
+    for (var c = 0; c < cands.length; c++) {
+      var j3 = cands[c];
+      var px2 = j3 % W, py2 = (j3 / W) | 0, r3 = d[j3] / 3;
+      if (r3 < 6) continue;
+      var cov = ringScore(px2, py2, r3);
+      var sc = cov * 2 + (d[j3] / maxd);
+      if (sc > bestScore) { bestScore = sc; bestCell = j3; bestCov = cov; }
+    }
+    if (bestCell < 0) return null;
+
+    // plateau mean around the winning pocket
+    var sx = 0, sy = 0, n = 0;
+    var bx = bestCell % W, by = (bestCell / W) | 0;
+    var nearR = Math.max(12, (d[bestCell] / 3) * 0.35);
+    for (var j4 = 0; j4 < d.length; j4++) {
+      if (d[j4] < thr) continue;
+      var qx = j4 % W, qy = (j4 / W) | 0;
+      if ((qx - bx) * (qx - bx) + (qy - by) * (qy - by) > nearR * nearR) continue;
+      sx += qx; sy += qy; n++;
+    }
+    if (!n) { sx = bx; sy = by; n = 1; }
+    return { x: sx / n, y: sy / n, clearance: d[bestCell] / 3, ring: bestCov };
   }
 
   /** Mask post-processing hook (currently: highlight-aware tube fill). */
   function floodHints(mk, scaled, opts) {
-    floodHighlights(mk.mask, scaled.width, scaled.height, scaled);
+    floodHighlights(mk.mask, scaled.width, scaled.height, scaled, opts);
   }
 
   function castRays(scaled, mask, center, opts) {
@@ -338,7 +532,13 @@
   /**
    * Main entry.
    * image: {width,height,data:RGBA}
+   * options may pin a specific frame color via `color: 'mint' | 'yellow'`.
    * Returns { ok, confidence, quad(source px), scaledQuad, metrics, flags, diagnostics }
+   *
+   * The pipeline runs once per known tube color (mint, then yellow) and the
+   * best-confidence detection wins; ties go to the earlier pass.  A single
+   * pass can succeed on the "wrong" color via blown-out neutral highlights,
+   * but the explicit band is more reliable, so both are always evaluated.
    */
   function detectQuadrat(image, options) {
     var opts = Object.assign({}, DEFAULTS, options || {});
@@ -347,6 +547,31 @@
     var scale = Math.min(1, opts.workWidth / srcW);
     var scaled = scale < 1 ? boxScale(image, Math.round(srcW * scale), Math.round(srcH * scale))
                            : { width: image.width, height: image.height, data: image.data };
+
+    var names = ['mint', 'yellow'];
+    if (options && FRAME_COLORS[options.color]) names = [options.color];
+    else if (options && (options.hueMin !== undefined || options.satMin !== undefined || options.valMin !== undefined)) {
+      names = ['custom']; // caller pinned an explicit band — single pass
+    }
+
+    var best = null, bestName = null, bestConf = -1;
+    for (var pi = 0; pi < names.length; pi++) {
+      var nm = names[pi];
+      var passOpts = (nm === 'custom')
+        ? Object.assign({}, opts, { color: 'custom' })
+        : Object.assign({}, opts, FRAME_COLORS[nm]);
+      var res = runPass(scaled, passOpts, t0);
+      res.diagnostics.color = passOpts.color;
+      if (res.confidence > bestConf + 1e-9) { best = res; bestName = passOpts.color; bestConf = res.confidence; }
+    }
+    if (best) best.metrics.frameColor = bestName;
+    return best;
+  }
+
+  /** One full detection pipeline over `scaled`, parameterized by tube color. */
+  function runPass(scaled, opts, t0) {
+    var srcW = scaled.width, srcH = scaled.height;
+    var scale = 1;
     var W = scaled.width, H = scaled.height;
 
     var mk = buildMask(scaled, opts);
@@ -808,6 +1033,7 @@
   return {
     DEFAULTS: DEFAULTS,
     detectQuadrat: detectQuadrat,
+    interiorPeak: interiorPeak,
     warpToSquare: warpToSquare,
     boxScale: boxScale,
     buildMask: buildMask,
