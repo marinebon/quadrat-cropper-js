@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Quadrat Cropper</title>
+<link rel="stylesheet" href="css/styles.css">
+</head>
+<body>
+<header class="topbar">
+  <h1>Quadrat Cropper</h1>
+  <div class="actions">
+    <button id="btnAddFiles" type="button">＋ Add images</button>
+    <button id="btnAddDrive" type="button">⊕ Add from Google Drive</button>
+    <input type="text" id="folderLink" placeholder="Paste a Drive photo link (no sign-in) or folder link…"
+           spellcheck="false" autocomplete="off">
+    <button id="btnFolderLink" type="button" title="List images from the pasted folder">
+      Load link
+    </button>
+    <button id="btnSettings" type="button" title="Google Drive sign-in settings">⚙</button>
+    <button id="btnHelp" type="button" title="How to use this app">?</button>
+    <span class="spacer"></span>
+    <button id="btnExport" type="button" class="primary" disabled>⬇ Export ZIP</button>
+    <button id="btnClear" type="button">Clear</button>
+  </div>
+  <div class="progress" id="progressWrap" hidden>
+    <div class="progress-fill" id="progressFill"></div>
+    <span class="progress-text" id="progressText"></span>
+  </div>
+  <div class="stats" id="stats" hidden></div>
+</header>
+
+<main>
+  <div id="dropzone" class="dropzone">
+    <p><strong>Drop images — or a Drive-exported .zip — here</strong>, add them
+       with <em>Add images</em>, or paste a Drive link above.</p>
+    <p class="muted">Each photo is scanned for the mint-green PVC frame; the
+       square opening is auto-cropped.
+       <span class="legend">
+         <span class="chip green"></span> auto-accepted
+         <span class="chip amber"></span> review suggested
+         <span class="chip red"></span> needs manual corners
+       </span>
+       <button id="btnDropHelp" type="button" class="linklike">how it works</button></p>
+  </div>
+  <section id="grid" class="grid"></section>
+</main>
+
+<!-- folder link without sign-in: offer the zero-setup paths -->
+<dialog id="folderDialog" class="dialog">
+  <h2>Whole Drive folder</h2>
+  <p>Google only lets a signed-in app <em>list</em> everything in a folder,
+     so pick whichever of these is easiest:</p>
+  <div class="dialog-actions column">
+    <button id="btnFolderZip" type="button" class="primary">
+      I'll download the folder as a .zip (no sign-in)</button>
+    <p class="muted small">In Drive: right-click the folder → <em>Download</em>.
+       When it finishes, drop the .zip anywhere on this page.</p>
+    <button id="btnFolderSignin" type="button">
+      Set up one-time Google sign-in (3 min)</button>
+    <button value="cancel" formnovalidate>Cancel</button>
+  </div>
+</dialog>
+
+<!-- first-run onboarding -->
+<dialog id="welcomeDialog" class="dialog">
+  <h2>Welcome 👋</h2>
+  <p>This app finds the mint-green PVC quadrat in each photo and crops the
+     square opening (25 × 25 cm) automatically. Low-confidence crops are flagged
+     so you can drag the corner markers yourself.</p>
+  <h3>Getting images in — any one of:</h3>
+  <ol>
+    <li><b>Drag &amp; drop</b> image files onto the page.</li>
+    <li><b>Paste a Drive link</b> to a single photo (shared as
+        “Anyone with the link”) — works instantly, no sign-in.</li>
+    <li><b>Bulk from Drive:</b> either right-click the folder in Drive →
+        <em>Download</em> and drop the <b>.zip</b> here (no sign-in), or do a
+        one-time Google sign-in (⚙ button) and paste the folder link.</li>
+  </ol>
+  <p class="muted small">Optionally drop in the trip <code>.csv</code> files —
+     their columns get merged into the export spreadsheet.</p>
+  <div class="dialog-actions">
+    <button id="btnWelcomeOk" class="primary" value="ok">Got it</button>
+  </div>
+</dialog>
+
+<!-- help dialog (same content, always available) -->
+<dialog id="helpDialog" class="dialog">
+  <h2>How to use</h2>
+  <ol>
+    <li><b>Add images</b>: drop files / a Drive-exported .zip, or paste a
+        Drive link. Single-photo links work with no setup; whole folders need
+        the .zip trick or a one-time sign-in (⚙).</li>
+    <li><b>Wait for the scan</b>: green ring = confident auto-crop
+        (confidence ≥ 0.80), amber = review suggested (0.55–0.80),
+        red = needs manual corners (&lt; 0.55 or detection failed).</li>
+    <li><b>Review</b>: click any thumbnail to see the crop. For red/amber
+        ones, drag the corner markers onto the inner corners of the frame,
+        then <em>Apply &amp; re-crop</em>.</li>
+    <li><b>Tick</b> the images you want, then <b>Export ZIP</b> — you get the
+        crops plus a spreadsheet with date / site / group / confidence / EXIF
+        and any .csv columns.</li>
+  </ol>
+  <p class="muted small">Tips: a camera distance of ~0.45 m works best; the
+     frame should be fully inside the photo. Pre-cropped images (no green
+     frame) are rejected rather than guessed.</p>
+  <div class="dialog-actions">
+    <button id="btnHelpClose" class="primary" value="close">Close</button>
+  </div>
+</dialog>
+
+<!-- settings dialog -->
+<dialog id="settingsDialog" class="dialog">
+  <form method="dialog">
+    <h2>Google Drive sign-in (one-time)</h2>
+    <p>This is only needed to <em>list</em> a whole Drive folder automatically.
+       Single-photo links and .zip drops never need it.</p>
+    <ol class="small">
+      <li>Open <a href="https://console.cloud.google.com/apis/credentials" target="_blank" rel="noopener">Google Cloud → Credentials</a>
+          (free Google account) and <b>Create credentials → OAuth client ID</b>.</li>
+      <li>Application type: <b>Web application</b>. Under “Authorized JavaScript
+          origins” add exactly this (click to copy):
+          <button type="button" id="btnCopyOrigin" class="mono copyable"
+                  title="Click to copy"></button></li>
+      <li>Copy the resulting <b>Client ID</b> (ends in
+          <code>.apps.googleusercontent.com</code>) and paste it below.</li>
+    </ol>
+    <label>OAuth Client ID
+      <input type="text" id="clientIdInput" spellcheck="false" autocomplete="off"
+             placeholder="1234-abc.apps.googleusercontent.com">
+    </label>
+    <p class="muted small">Stored only in this browser, sent only to Google.
+       Scopes requested: <code>drive.readonly</code> (list + download the files you pick).</p>
+    <div class="dialog-actions">
+      <button value="cancel" formnovalidate>Cancel</button>
+      <button id="btnSaveSettings" value="confirm" class="primary">Save</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- review/editor dialog -->
+<dialog id="editorDialog" class="dialog wide">
+  <h2 id="editorTitle">Manual corner review</h2>
+  <div class="editor-body">
+    <div class="editor-stage" id="editorStage">
+      <img id="editorImg" alt="source image">
+      <canvas id="editorOverlay"></canvas>
+    </div>
+    <aside class="editor-side">
+      <div id="editorInfo" class="muted small"></div>
+      <div class="editor-help">
+        <p>Drag the four corner markers onto the <em>inner</em> corners of the
+           PVC opening. The crop area updates live.</p>
+        <p class="muted">Keys: <kbd>R</kbd> reset to auto-detected,
+           <kbd>Enter</kbd> apply &amp; re-crop, <kbd>Esc</kbd> close.</p>
+      </div>
+      <div class="preview-wrap" id="cropPreviewWrap">
+        <h3>Crop preview</h3>
+        <canvas id="cropPreview" width="300" height="300"></canvas>
+      </div>
+      <div class="dialog-actions">
+        <button id="btnEditorReset" type="button">Reset</button>
+        <button id="btnEditorClose" type="button" class="secondary">Close</button>
+        <button id="btnEditorApply" type="button" class="primary">Apply &amp; re-crop</button>
+      </div>
+    </aside>
+  </div>
+</dialog>
+
+<!-- preview dialog (click a thumbnail) -->
+<dialog id="previewDialog" class="dialog wide">
+  <h2 id="previewTitle">Crop</h2>
+  <div class="preview-body">
+    <img id="previewImg" alt="cropped quadrat">
+    <pre id="previewMeta" class="small"></pre>
+  </div>
+  <div class="dialog-actions">
+    <button id="btnPreviewClose" type="button" class="primary">Close</button>
+  </div>
+</dialog>
+
+<input type="file" id="fileInput" accept="image/jpeg,image/*,.zip" multiple hidden>
+
+<footer class="foot muted small">
+  Detector: pure-JS HSV mask → ray-casting → sequential RANSAC → per-edge refinement.
+  Auto-accept ≥ 0.80 · review &lt; 0.80 · manual &lt; 0.55.
+</footer>
+
+<script src="js/qd.js"></script>
+<script src="js/exif.js"></script>
+<script src="js/metadata.js"></script>
+<script src="js/drive.js"></script>
+<script src="js/unzip.js"></script>
+<script src="js/grid.js"></script>
+<script src="js/editor.js"></script>
+<script src="js/export.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>
