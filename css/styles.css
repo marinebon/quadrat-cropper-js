@@ -74,7 +74,7 @@ main { padding: 16px; }
 .grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
-  gap: 12px;
+  gap: 16px; /* leaves room for the thick status rings */
 }
 
 .card {
@@ -109,19 +109,13 @@ main { padding: 16px; }
 .card .flags { padding: 0 9px 8px; font-size: 10.5px; color: var(--amber); }
 .card .flags .none { color: transparent; }
 
-/* confidence ring */
-.card[data-tier="ok"]     { outline: 2px solid color-mix(in srgb, var(--accent) 55%, transparent); }
-.card[data-tier="review"] { outline: 2px solid color-mix(in srgb, var(--amber) 65%, transparent); }
-.card[data-tier="manual"] { outline: 2px solid color-mix(in srgb, var(--red) 70%, transparent); }
-.card[data-tier="failed"] { outline: 2px solid var(--red); }
-.card.selected .tick { background: var(--accent); border-color: var(--accent); }
-.card .tick {
-  position: absolute; top: 6px; right: 6px; z-index: 2;
-  width: 20px; height: 20px; border-radius: 50%;
-  border: 1.5px solid var(--line); background: #0009;
-  cursor: pointer; font-size: 11px; color: transparent;
-  display: flex; align-items: center; justify-content: center; line-height: 1;
-}
+/* confidence ring — thick, saturated so tier is readable at a glance */
+.card[data-tier="ok"]     { box-shadow: 0 0 0 6px #2fa46b; }
+.card[data-tier="review"] { box-shadow: 0 0 0 6px var(--amber); }
+.card[data-tier="manual"] { box-shadow: 0 0 0 6px var(--red); }
+.card[data-tier="failed"] { box-shadow: 0 0 0 6px var(--red); }
+/* failed cards show the source photo, not a crop */
+.card[data-tier="failed"] img.thumb { object-fit: contain; }
 
 .muted { color: var(--muted); }
 .small { font-size: 12px; }

@@ -20,7 +20,8 @@
     <button id="btnSettings" type="button" title="Google Drive sign-in settings">⚙</button>
     <button id="btnHelp" type="button" title="How to use this app">?</button>
     <span class="spacer"></span>
-    <button id="btnExport" type="button" class="primary" disabled>⬇ Export ZIP</button>
+    <button id="btnExport" type="button" class="primary" disabled
+            title="Includes auto crops at ≥ 80% confidence and every manually adjusted one">⬇ Export ZIP</button>
     <button id="btnClear" type="button">Clear</button>
   </div>
   <div class="progress" id="progressWrap" hidden>
@@ -97,12 +98,15 @@
     <li><b>Wait for the scan</b>: green ring = confident auto-crop
         (confidence ≥ 0.80), amber = review suggested (0.55–0.80),
         red = needs manual corners (&lt; 0.55 or detection failed).</li>
-    <li><b>Review</b>: click any thumbnail to see the crop. For red/amber
+    <li><b>Review</b>: click any thumbnail to see the crop — failed ones show
+        the source photo so you can see why nothing was detected. For red/amber
         ones, drag the corner markers onto the inner corners of the frame,
         then <em>Apply &amp; re-crop</em>.</li>
-    <li><b>Tick</b> the images you want, then <b>Export ZIP</b> — you get the
-        crops plus a spreadsheet with date / site / group / confidence / EXIF
-        and any .csv columns.</li>
+    <li><b>Export ZIP</b> — no ticking needed: every crop with
+        <b>≥ 80% confidence</b> is included automatically, plus any you
+        adjusted manually (adjusting a red/amber one always includes it).
+        Images without a usable frame are skipped but listed in
+        <code>manifest.csv</code> so nothing is silently lost.</li>
   </ol>
   <p class="muted small">Best results follow the P2P protocol as-designed:
      the camera 42 cm above the surface, whole quadrat inside the photo,

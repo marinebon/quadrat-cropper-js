@@ -248,7 +248,7 @@
       status: 'queued', ok: false, conf: 0, det: null,
       corners: null, source: 'auto', flags: [], reason: null,
       cropBlob: null, thumbURL: null, meta: null, exif: null,
-      selected: true, fullDataKept: false
+      fullDataKept: false
     };
   }
 
@@ -326,6 +326,10 @@
       await makeCrop(it, quadFull, 'auto');
     } else {
       it.status = 'failed';
+      // show the source photo as the card thumbnail so failures can be
+      // spotted (and reviewed instead of a blank placeholder)
+      it.thumbURL = thumbDataUrlFit(dec.cv, 340);
+      it.thumbIsSource = true;
     }
     // keep full-resolution source for manual review of failures only
     it.keptForReview = !it.ok;
@@ -374,6 +378,19 @@
     var t = document.createElement('canvas');
     t.width = size; t.height = size;
     t.getContext('2d').drawImage(cv, 0, 0, size, size);
+    return t.toDataURL('image/jpeg', 0.75);
+  }
+
+  /** Thumbnail that letterboxes a non-square canvas (source shots, 4:3 …). */
+  function thumbDataUrlFit(cv, size) {
+    var t = document.createElement('canvas');
+    t.width = size; t.height = size;
+    var ctx = t.getContext('2d');
+    ctx.fillStyle = '#0b1014';
+    ctx.fillRect(0, 0, size, size);
+    var s = Math.min(size / cv.width, size / cv.height);
+    var w = cv.width * s, h = cv.height * s;
+    ctx.drawImage(cv, (size - w) / 2, (size - h) / 2, w, h);
     return t.toDataURL('image/jpeg', 0.75);
   }
 
@@ -433,23 +450,42 @@
     var n = QDGrid.updateStats(state.items);
     var ok = n.auto, review = n.review, manual = n.manual, failed = n.failed;
     var total = ok + review + manual + failed;
-    if (!total) { ui.stats.hidden = true; return; }
+    if (!total) { ui.stats.hidden = true; ui.exportBtn.textContent = '⬇ Export ZIP'; return; }
     ui.stats.hidden = false;
+    var ready = state.items.filter(isExportable).length;
     ui.stats.innerHTML =
       '<span><b>' + ok + '</b> auto-accepted</span>' +
       '<span><b>' + review + '</b> suggested review</span>' +
       '<span><b>' + manual + '</b> need manual corners</span>' +
       '<span><b>' + failed + '</b> no frame found</span>' +
-      '<span><b>' + total + '</b> total</span>';
+      '<span><b>' + total + '</b> total</span>' +
+      '<span>· <b>' + ready + '</b> ready for export</span>';
+    ui.exportBtn.textContent = '⬇ Export ZIP (' + ready + ')';
+    ui.exportBtn.title = 'Includes auto crops at ≥ 80% confidence and every manually adjusted one';
     ui.exportBtn.disabled = !state.items.length;
   }
 
+  /** An item qualifies for export on its own merits — no manual ticking. */
+  function isExportable(it) {
+    return !!it.cropBlob && (it.source === 'manual' || (it.ok && it.conf >= 0.8));
+  }
+
   function doExport() {
-    var sel = state.items.filter(function (it) { return it.selected && it.cropBlob; });
-    if (!sel.length) { alert('Nothing to export (tick thumbnails to include them).'); return; }
+    var sel = state.items.filter(isExportable);
+    if (!sel.length) {
+      alert('No images ready to export.\n\n'
+        + 'Crops are included automatically when confidence is at least 80%.\n'
+        + 'For the red/amber ones, click the thumbnail and adjust the corner\n'
+        + 'markers — a manually adjusted crop is always included.');
+      return;
+    }
+    var skipped = state.items.length - sel.length;
     setProgress(true, 'Building ZIP…', null);
-    QDExport.exportZip(sel).then(function (size) {
+    QDExport.exportZip(sel, state.items).then(function (size) {
       setProgress(false);
+      alert(sel.length + ' crop' + (sel.length === 1 ? '' : 's') + ' exported.'
+        + (skipped ? '\n\n' + skipped + ' image' + (skipped === 1 ? '' : 's')
+          + ' not included (confidence < 80% and not manually adjusted) — they are listed in manifest.csv.' : ''));
       console.log('zip ready:', size);
     }).catch(function (e) { setProgress(false); alert(String(e.message || e)); });
   }

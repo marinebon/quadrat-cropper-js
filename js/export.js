@@ -62,30 +62,36 @@
   }
 
   /**
-   * Export selected items.
-   * item shape: { name, cropBlob|null, conf, ok, flags, meta, exif, source, corners, driveId }
+   * Export a ZIP. `items` = the images whose crops go into the zip
+   * (confidence ≥ 0.80 or manually adjusted). `manifestItems` (optional) =
+   * every image loaded — they are all recorded in manifest.csv and
+   * review.json (with an empty "file" column when no crop is included) so
+   * excluded shots are never silently dropped.
+   * item shape: { id, name, cropBlob|null, conf, ok, flags, meta, exif, source, corners, driveId, status }
    */
-  function exportZip(items) {
-    var entries = [];
-    var seen = {};
-    items.forEach(function (it) {
+  function exportZip(items, manifestItems) {
+    manifestItems = manifestItems || items;
+    var inZip = {};
+    items.forEach(function (it) { inZip[it.id] = true; });
+
+    var entries = [], rows = [], seen = {};
+    var metaCols = collectMetaColumns(manifestItems);
+    manifestItems.forEach(function (it) {
       var dupBase = (it.exportName || it.name.replace(/\.[^.]+$/, '')) + '_crop';
       var base = dupBase; var n = 2;
       while (seen[base + '.jpg']) { base = dupBase + '_' + n++; }
       seen[base + '.jpg'] = true;
-      if (it.cropBlob) entries.push({ name: base + '.jpg', blob: it.cropBlob });
-      else if (it.warpData) entries.push({ name: base + '.jpg', data: it.warpData });
-    });
-
-    var metaCols = collectMetaColumns(items);
-    var header = ['file', 'status', 'confidence', 'flags', 'source', 'date', 'site', 'group', 'code',
-      'exif_make', 'exif_model', 'exif_datetime', 'drive_file_id'].concat(metaCols);
-    var lines = [root.QDMeta.csvRow(header)];
-    items.forEach(function (it) {
-      var base = (it.exportName || it.name.replace(/\.[^.]+$/, '')) + '_crop';
+      var fileName = '';
+      if (inZip[it.id]) {
+        fileName = base + '.jpg';
+        if (it.cropBlob) entries.push({ name: fileName, blob: it.cropBlob });
+        else if (it.warpData) entries.push({ name: fileName, data: it.warpData });
+        else fileName = '';
+      }
       var row = [
-        base + '.jpg',
-        it.ok ? (it.source === 'manual' ? 'manual' : (it.conf >= 0.8 ? 'auto' : 'review')) : 'failed',
+        fileName,
+        it.ok ? (it.source === 'manual' ? 'manual' : (it.conf >= 0.8 ? 'auto' : 'review'))
+              : (it.status === 'processing' ? 'review' : (it.status || 'failed')),
         it.ok ? Math.round(it.conf * 1000) / 1000 : '',
         (it.flags || []).join('; '),
         it.source || 'auto',
@@ -99,12 +105,16 @@
         it.driveId || ''
       ];
       metaCols.forEach(function (c) { row.push((it.meta && it.meta.csv && it.meta.csv[c]) || ''); });
-      lines.push(root.QDMeta.csvRow(row));
+      rows.push(row);
     });
+
+    var header = ['file', 'status', 'confidence', 'flags', 'source', 'date', 'site', 'group', 'code',
+      'exif_make', 'exif_model', 'exif_datetime', 'drive_file_id'].concat(metaCols);
+    var lines = [root.QDMeta.csvRow(header)].concat(rows.map(function (r) { return root.QDMeta.csvRow(r); }));
     var manifest = new TextEncoder().encode(lines.join('\r\n') + '\r\n');
     entries.push({ name: 'manifest.csv', data: manifest });
 
-    var review = { generated: new Date().toISOString(), items: items.map(function (it) {
+    var review = { generated: new Date().toISOString(), items: manifestItems.map(function (it) {
       return { name: it.name, ok: it.ok, confidence: it.conf,
                source: it.source, corners: it.corners || null,
                flags: it.flags || [], status: it.status };

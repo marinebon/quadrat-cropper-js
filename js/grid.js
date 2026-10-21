@@ -4,7 +4,7 @@
 (function (root) {
   'use strict';
 
-  var hooks = { onThumb: null, onTick: null };
+  var hooks = { onThumb: null };
 
   function init(h) { hooks = Object.assign(hooks, h); }
 
@@ -32,31 +32,18 @@
     card.dataset.tier = tierOf(item);
     card.dataset.id = item.id;
 
-    var tick = el('div', 'tick');
-    tick.textContent = '✓';
-    tick.dataset.id = item.id;
-    tick.title = 'Include in export';
-    if (item.selected) tick.classList.add('sel');
-    tick.addEventListener('click', function (e) {
-      e.stopPropagation();
-      item.selected = !item.selected;
-      tick.classList.toggle('sel', item.selected);
-      card.classList.toggle('selected', item.selected);
-      hooks.onTick && hooks.onTick(item);
-    });
-    if (item.selected) card.classList.add('selected');
-    card.appendChild(tick);
-
     var tw = el('div', 'thumb-wrap');
     if (item.thumbURL) {
       var img = el('img', 'thumb');
       img.src = item.thumbURL;
-      img.alt = 'crop ' + item.name;
+      img.alt = (item.ok ? 'crop ' : 'source ') + item.name;
       tw.appendChild(img);
     } else {
       tw.appendChild(el('div', 'thumb placeholder'));
     }
-    tw.title = 'Click to ' + (item.ok ? 'view crop / edit corners' : 'inspect');
+    tw.title = item.ok ? 'Click to view crop / edit corners'
+      : item.status === 'failed' ? 'No frame found — click to fix corners manually'
+      : 'Click to inspect';
     tw.addEventListener('click', function () { hooks.onThumb && hooks.onThumb(item); });
     card.appendChild(tw);
 
@@ -83,10 +70,12 @@
     meta.appendChild(st);
     card.appendChild(meta);
 
-    if (item.flags && item.flags.length) {
+    var warn = item.flags && item.flags.length ? item.flags[0]
+      : item.status === 'failed' && item.reason ? item.reason : null;
+    if (warn) {
       var fx = el('div', 'flags');
-      fx.textContent = '⚠ ' + item.flags[0];
-      fx.title = item.flags.join('\n');
+      fx.textContent = '⚠ ' + warn;
+      fx.title = item.flags && item.flags.length ? item.flags.join('\n') : item.reason;
       card.appendChild(fx);
     }
     return card;

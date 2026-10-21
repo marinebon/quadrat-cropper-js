@@ -79,12 +79,16 @@ Click a thumbnail: strong detections open a crop preview; weak ones open the
 corner editor (drag the four markers onto the inner corners of the PVC
 opening, live preview, `Enter` to apply, `R` to reset, `Esc` to close).
 
-**⬇ Export ZIP** produces `quadrat-crops-<timestamp>.zip` containing:
+**⬇ Export ZIP** — there is nothing to tick: every crop with **confidence ≥ 0.80**
+is included automatically, plus every one you adjusted manually. Red/amber
+thumbnails can be fixed in the editor to qualify. The
+`quadrat-crops-<timestamp>.zip` contains:
 
-- `<name>_crop.jpg` square crops
-- `manifest.csv` — filename, status, confidence, flags, date/site/group/code
-  parsed from filenames, EXIF (make/model/date), Drive file id, and any
-  columns joined from CSVs found in the Drive folder
+- `<name>_crop.jpg` square crops (cap 1600 px square)
+- `manifest.csv` — every image that was loaded, with filename, status,
+  confidence, flags, date/site/group/code parsed from filenames, EXIF
+  (make/model/date), Drive file id, and any columns joined from CSVs found in
+  the Drive folder; images excluded from the zip keep an empty *file* column
 - `review.json` — full per-image record incl. corner coordinates used
 
 ## Google Drive sign-in (only for auto-listing whole folders)
