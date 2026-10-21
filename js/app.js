@@ -412,21 +412,22 @@
   // ---------------------------------------------------------------- grid/ui
 
   function onThumbClick(item) {
-    var tier = QDGrid.tierOf(item);
-    if (tier === 'manual' || tier === 'failed' || item.status !== 'done') {
-      // need manual review for weak/failed detections
-      QDEditor.open(item, function (quad) { reCropManual(item, quad); });
+    if (!item.det) return; // still scanning
+    if (QDGrid.tierOf(item) === 'ok') {
+      openPreview(item);
       return;
     }
-    openPreview(item);
+    // review / manual / failed → review page: the full photo with the
+    // suggested box and draggable corner markers
+    QDEditor.open(item, function (quad) { reCropManual(item, quad); });
   }
 
   function openPreview(item) {
     ui.previewTitle.textContent = item.name +
       (item.source === 'manual' ? ' (manual)' : ' — ' + Math.round(item.conf * 100) + '%');
-    if (item.cropBlob) {
-      if (ui.previewImg._url) URL.revokeObjectURL(ui.previewImg._url);
-      ui.previewImg._url = item.previewURL;
+    if (item.previewURL) {
+      // item.previewURL is owned by the item (makeCrop revokes and replaces
+      // it when the crop is rebuilt) — never revoke or replace it here
       ui.previewImg.src = item.previewURL;
     }
     ui.previewMeta.textContent = JSON.stringify({
