@@ -35,11 +35,16 @@
   // Detector version — bumped when qd.js or its calling contract changes.
   // app.js surfaces this in the page title / header so users can confirm
   // they are running a fresh build (not a cached one).
-  var VERSION = '1.4.0';
+  var VERSION = '1.4.2';
 
   var DEFAULTS = {
     workWidth: 1152,
     nRays: 128,
+    // opening-size prior: sideMed relative to sqrt(W*H) — the rig (TG-7 at
+    // a fixed height over the 25 cm opening) keeps this in a narrow band;
+    // combos far outside it are sub-region or coupe-assembly clumps
+    openingSideMin: 0.38,
+    openingSideMax: 0.75,
     hueMin: 118, hueMax: 172,
     satMin: 0.13,
     valMin: 0.045,
@@ -547,6 +552,54 @@
     return lines;
   }
 
+  // single-line RANSAC whose sample pairs must be parallel to refDir (a
+  // known-good orientation family): texture diagonals in a cluttered
+  // corridor can then never outvote the rail by raw support
+  function corridorRail(points, refDir, opts, W, H) {
+    var tol = opts.rayTol;
+    var rx = refDir.x, ry = refDir.y;
+    var best = null;
+    for (var i = 0; i < points.length; i++) {
+      for (var j = i + 1; j < points.length; j++) {
+        var p1 = points[i], p2 = points[j];
+        var dx = p2.x - p1.x, dy = p2.y - p1.y;
+        var len = Math.hypot(dx, dy);
+        if (len < 0.25 * Math.min(W, H)) continue; // pairs must be far apart
+        var dotp = Math.abs((dx * rx + dy * ry) / len);
+        if (dotp < 0.93) continue; // pair line > ~21° off the family axis
+        var nx = -dy / len, ny = dx / len;
+        var dd = nx * p1.x + ny * p1.y;
+        var c = 0;
+        for (var q = 0; q < points.length; q++) {
+          var r = Math.abs(points[q].x * nx + points[q].y * ny - dd);
+          if (r < tol) c++;
+        }
+        if (!best || c > best.count) best = { count: c, nx: nx, ny: ny, dd: dd };
+      }
+    }
+    if (!best || best.count < opts.minSupport) return null;
+    var inliers = [];
+    for (var q2 = 0; q2 < points.length; q2++)
+      if (Math.abs(points[q2].x * best.nx + points[q2].y * best.ny - best.dd) < tol) inliers.push(points[q2]);
+    var l = fitLineFromPoints(inliers);
+    for (var it = 0; it < opts.refineIters; it++) {
+      var inl2 = [];
+      for (var q3 = 0; q3 < points.length; q3++)
+        if (lineDist(l, points[q3]) < tol) inl2.push(points[q3]);
+      if (inl2.length < opts.minSupport) break;
+      inliers = inl2;
+      l = fitLineFromPoints(inl2);
+    }
+    var mn2 = 1e9, mx2 = -1e9;
+    for (var s = 0; s < inliers.length; s++) {
+      var pr = (inliers[s].x - l.c.x) * l.dir.x + (inliers[s].y - l.c.y) * l.dir.y;
+      if (pr < mn2) mn2 = pr; if (pr > mx2) mx2 = pr;
+    }
+    l.spread = mx2 - mn2;
+    l.inliers = inliers;
+    return l;
+  }
+
   function isGreenAt(scaled, mask, x, y, rad) {
     var W = scaled.width, H = scaled.height;
     var x0 = Math.max(0, (x - rad) | 0), y0 = Math.max(0, (y - rad) | 0);
@@ -587,6 +640,7 @@
     }
 
     var best = null, bestName = null, bestConf = -1;
+    var passResults = [];
     for (var pi = 0; pi < names.length; pi++) {
       var nm = names[pi];
       var passOpts = (nm === 'custom')
@@ -594,9 +648,22 @@
         : Object.assign({}, opts, FRAME_COLORS[nm]);
       var res = runPass(scaled, passOpts, t0);
       res.diagnostics.color = passOpts.color;
+      passResults.push(res);
       if (res.confidence > bestConf + 1e-9) { best = res; bestName = passOpts.color; bestConf = res.confidence; }
     }
-    if (best) best.metrics.frameColor = bestName;
+    if (!best || (bestConf <= 0)) {
+      // all passes rejected: surface the most-progressed failure (deepest
+      // reached stage = most fitted lines, tie-broken by rays), not the
+      // first pass — otherwise a wrong-color pass masks the real diagnosis
+      var mostP = null;
+      for (var ri2 = 0; ri2 < passResults.length; ri2++) {
+        var R = passResults[ri2];
+        var prog = (R.diagnostics.linesFound || 0) * 4 + (R.diagnostics.rayHits || 0);
+        if (!mostP || prog > mostP._prog) { mostP = R; mostP._prog = prog; }
+      }
+      if (mostP) { best = mostP; best.metrics.frameColor = mostP.diagnostics.color; }
+    }
+    if (best && best.ok) best.metrics.frameColor = bestName;
     return best;
   }
 
@@ -765,7 +832,15 @@
     // enumerate combinations: 2 lines from family0 x 2 from family1, score quads
     function dbgReason(s) { if (out._qcdbg) out._qcdbg.push(s); }
     function quadForCombo(a, b, c, d) {
-      var ls = [a, b, c, d];
+      // orient normals toward the ray origin on local copies — the earlier
+      // flip uses the hit-point mean, which kelp skews; consistent inward
+      // normals keep the rail order (and thus the polygon) well-formed
+      var lsi = [a, b, c, d].map(function (l) {
+        if (ctr0.x * l.n.x + ctr0.y * l.n.y - l.d >= 0) return l;
+        return { n: { x: -l.n.x, y: -l.n.y }, d: -l.d, dir: l.dir, c: l.c, spread: l.spread, inliers: l.inliers };
+      });
+      a = lsi[0]; b = lsi[1]; c = lsi[2]; d = lsi[3];
+      var ls = lsi;
       // corners: lines sorted by normal angle; consecutive intersections
       var sorted = ls.slice().sort(function (p, q) {
         var ap = Math.atan2(p.n.y, p.n.x), aq = Math.atan2(q.n.y, q.n.x);
@@ -790,6 +865,29 @@
       }
       var sideMed = median(sideLens);
       if (sideMed < 0.25 * Math.min(W, H)) { dbgReason('sideMed'); return null; }
+      // opening-size prior (assumption: same rig height ⇒ same opening size)
+      var sideNorm = sideMed / Math.sqrt(W * H);
+      if (sideNorm < opts.openingSideMin || sideNorm > opts.openingSideMax) { dbgReason('sidePrior:' + sideNorm.toFixed(2)); return null; }
+      // near-center: the frame middle (ray origin) must sit strictly inside
+      // the candidate opening — the protocol centers the quadrat in the
+      // shot, so a quad clumped into a sub-region or hugging one side is a
+      // missed-corner assembly, however square it looks
+      var midC = out.center || { x: W / 2, y: H / 2 };
+      var inMin = Infinity;
+      for (var pi = 0; pi < 4; pi++) {
+        var AP = corners[pi], BP = corners[(pi + 1) % 4];
+        var ex = BP.x - AP.x, ey = BP.y - AP.y;
+        var el = Math.hypot(ex, ey) || 1;
+        var nx = -ey / el, ny = ex / el;
+        // orient the inward side using the quad's own centroid (a vertex of
+        // the polygon always lies strictly inside)
+        var sc = ((corners[0].x + corners[1].x + corners[2].x + corners[3].x) / 4 - AP.x) * nx
+               + ((corners[0].y + corners[1].y + corners[2].y + corners[3].y) / 4 - AP.y) * ny;
+        if (sc < 0) { nx = -nx; ny = -ny; }
+        var dist = (midC.x - AP.x) * nx + (midC.y - AP.y) * ny;
+        if (dist < inMin) inMin = dist;
+      }
+      if (inMin < Math.max(6, 0.05 * sideMed)) { dbgReason('origin-outside:' + Math.round(inMin)); return null; }
       var sideCV = (Math.max.apply(null, sideLens) - Math.min.apply(null, sideLens)) / sideMed;
       // The opening is physically square; foreshortening from reasonable
       // camera tilt stays under ~20% side spread. Combos beyond this are
@@ -838,23 +936,109 @@
       var score = 0.26 * supScore + 0.18 * tubeScore + 0.1 * lenScore + 0.2 * parScore + 0.16 * angleScore
                 + 0.1 * clamp01(1 - sideCV / 0.5) - 0.45 * pen;
       if (out._qcdbg) out._qcdbg.push({ score: +score.toFixed(3), f0i: f0.indexOf(a), open: openParts, sup: +supScore.toFixed(2), pen: +pen.toFixed(2) });
-      return { corners: corners, score: score, sideLens: sideLens, expectedLines: sorted, parts: { supScore: supScore, tubeScore: tubeScore, lenScore: lenScore, parScore: parScore, angleScore: angleScore, sideCV: clamp01(1 - sideCV / 0.5), openPen: pen } };
+      return { corners: corners, score: score, sideLens: sideLens, sideCV: sideCV, expectedLines: sorted, parts: { supScore: supScore, tubeScore: tubeScore, lenScore: lenScore, parScore: parScore, angleScore: angleScore, sideCV: clamp01(1 - sideCV / 0.5), openPen: pen } };
     }
 
     var best = null;
     out._qcdbg = [];
     var f0 = fam[0].slice(0, 4).sort(function (p, q) { return q.inliers.length - p.inliers.length; });
     var f1 = fam[1].slice(0, 4).sort(function (p, q) { return q.inliers.length - p.inliers.length; });
-    for (var ci1 = 0; ci1 < f0.length; ci1++) {
-      for (var ci2 = ci1 + 1; ci2 < f0.length; ci2++) {
-        for (var cj1 = 0; cj1 < f1.length; cj1++) {
-          for (var cj2 = cj1 + 1; cj2 < f1.length; cj2++) {
-            var combo = quadForCombo(f0[ci1], f0[ci2], f1[cj1], f1[cj2]);
-            if (combo && (!best || combo.score > best.score)) best = combo;
+
+    var diagL = Math.sqrt(W * H);
+    var ctr0 = out.center || { x: W / 2, y: H / 2 };
+    function runCombos(f0, f1) {
+      var bestC = null;
+      for (var ci1 = 0; ci1 < f0.length; ci1++) {
+        for (var ci2 = ci1 + 1; ci2 < f0.length; ci2++) {
+          for (var cj1 = 0; cj1 < f1.length; cj1++) {
+            for (var cj2 = cj1 + 1; cj2 < f1.length; cj2++) {
+              var combo = quadForCombo(f0[ci1], f0[ci2], f1[cj1], f1[cj2]);
+              if (combo && (!bestC || combo.score > bestC.score)) bestC = combo;
+            }
+          }
+        }
+      }
+      return bestC;
+    }
+    best = runCombos(f0, f1);
+
+    // --- missing-side recovery: per-side corridor refit ---
+    // Kelp fringes and rig arms can outvote rails in the global pool (arm
+    // rods even cross the opening), so whole sides may lack a usable line.
+    // Recovery refits each side independently: ray points in that side's
+    // band and cone from the frame middle, constrained to the family axis;
+    // a candidate that passes the rail tests joins its family and the
+    // combination search reruns; the best-scoring quad across all refits wins.
+    out._recovered = [];
+    if (!best) {
+      var railMin = 0.15 * diagL;
+      function isRailish(l) { return Math.abs(l.d - (ctr0.x * l.n.x + ctr0.y * l.n.y)) >= railMin; }
+      function meanTangent(arr, fbDir) {
+        var sx = 0, sy = 0;
+        for (var i = 0; i < arr.length; i++) {
+          var d2 = arr[i].dir;
+          if (sx * d2.x + sy * d2.y < 0) { sx -= d2.x; sy -= d2.y; } else { sx += d2.x; sy += d2.y; }
+        }
+        var len = Math.hypot(sx, sy);
+        if (len < 1e-6) return fbDir ? { x: fbDir.y, y: -fbDir.x } : null;
+        return { x: sx / len, y: sy / len };
+      }
+      var T0 = meanTangent(fam[0]);
+      var T1 = meanTangent(fam[1]);
+      if (!T0 && !T1) T0 = { x: 1, y: 0 };
+      if (!T0) T0 = { x: -T1.y, y: T1.x };
+      if (!T1) T1 = { x: -T0.y, y: T0.x };
+      var T = [T0, T1];
+      for (var fi = 0; fi < 2; fi++) {
+        var mine = fam[fi];
+        var nrm = { x: -T[fi].y, y: T[fi].x }; // across the opening for this family's rails
+        for (var side = 0; side < 2; side++) {
+          var s2 = side ? 1 : -1;
+          var sv = { x: nrm.x * s2, y: nrm.y * s2 };
+          var corr = [];
+          for (var hpi = 0; hpi < hitPts.length; hpi++) {
+            var hp = hitPts[hpi];
+            var rx = hp.x - ctr0.x, ry = hp.y - ctr0.y;
+            var q = rx * sv.x + ry * sv.y;
+            if (q < 0.12 * diagL || q > 0.45 * diagL) continue; // side band
+            var lat = rx * T[fi].x + ry * T[fi].y;
+            if (Math.abs(lat) > Math.abs(q) * 1.2) continue; // ~±50° cone along the side
+            corr.push(hp);
+          }
+          if (corr.length < opts.minSupport) continue;
+          var nl = corridorRail(corr, T[fi], opts, W, H);
+          if (!nl || (nl.spread || 0) < 0.2 * Math.min(W, H)) continue; // rail-length extent
+          if (!isRailish(nl)) continue; // texture crossing the middle is not a rail
+          var pm = nl.inliers[Math.floor(nl.inliers.length / 2)];
+          var gapOK = true;
+          for (var exi = 0; exi < mine.length; exi++) {
+            // only genuine rails block a duplicate refit; arm rods and kelp
+            // diagonals drift across every side's neighbourhood
+            if (!isRailish(mine[exi])) continue;
+            if (Math.abs(pm.x * mine[exi].n.x + pm.y * mine[exi].n.y - mine[exi].d) < 0.06 * diagL) { gapOK = false; break; }
+          }
+          if (!gapOK) continue; // duplicate rim of a known rail
+          var sgn2 = ctr0.x * nl.n.x + ctr0.y * nl.n.y - nl.d;
+          if (sgn2 < 0) { nl.n = { x: -nl.n.x, y: -nl.n.y }; nl.d = -nl.d; }
+          mine.push(nl);
+          out._dbgRec = (out._dbgRec || 0) + 1;
+          f0 = fam[0].slice(0, 4).sort(function (p, q) { return q.inliers.length - p.inliers.length; });
+          f1 = fam[1].slice(0, 4).sort(function (p, q) { return q.inliers.length - p.inliers.length; });
+          var tryBest = runCombos(f0, f1);
+          if (tryBest && (!best || tryBest.score > best.score)) {
+            best = tryBest; // keep the rail: each recovered side only improves the pool
+            out._recovered.push(fi);
+          } else {
+            mine.pop(); // refit didn't complete a valid quad — try the next side
           }
         }
       }
     }
+
+    // recovered rails never saw global vetoing — hold their quads to a
+    // tighter squareness bar; a skewed recovered box is bad data, not a crop
+    if (best && out._recovered.length && best.sideCV > 0.33) best = null;
+
     if (!best) {
       out.diagnostics.reason = 'no plausible quadrilateral among fitted edges';
       out.diagnostics.timeMs = Date.now() - t0;
