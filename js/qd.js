@@ -12,10 +12,12 @@
  *  3. Grow the mask through bright, weakly-tinted "highlight" pixels (direct
  *     sun blows the mint PVC out to near-white; the fill is bounded by the
  *     masked rims of the tube).
- *  4. Cast rays from the open interior's origin (deepest enclosed pocket,
- *     interior clutter stripped away); each ray keeps up to two sufficiently
- *     long mask runs (gap-tolerant) as points on INNER edges of the quadrat
- *     opening (ignores small moss specks / outer structure).
+ *  4. Cast rays from the frame middle as the origin — the protocol centers
+ *     the quadrat in the shot, so the middle must sit inside an enclosed
+ *     pocket of the mask (interior clutter stripped away); otherwise the
+ *     image is flagged and detection stops. Each ray keeps up to two
+ *     sufficiently long mask runs (gap-tolerant) as points on INNER edges
+ *     of the quadrat opening (ignores small moss specks / outer structure).
  *  5. Sequential RANSAC fits up to 8 inner-edge lines, merging parallel
  *     near-duplicates (the two rims of the same tube); group them into two
  *     orientation families (mod PI on tangent angle) and pick best pair each.
@@ -33,7 +35,7 @@
   // Detector version — bumped when qd.js or its calling contract changes.
   // app.js surfaces this in the page title / header so users can confirm
   // they are running a fresh build (not a cached one).
-  var VERSION = '1.3.0';
+  var VERSION = '1.4.0';
 
   var DEFAULTS = {
     workWidth: 1152,
@@ -256,76 +258,85 @@
   }
 
   /**
-   * Deepest point of the open interior. Chamfer distance transform over the
-   * mask (0 at tube pixels and at the image border); among deep candidate
-   * cells pick the most ring-enclosed pocket (see below), then average the
-   * cells near its plateau. Unlike the mask centroid this resists tube
-   * blobs outside the opening (e.g. a PVC side-arm or big tube structures) which
-   * would otherwise pull the ray origin into/behind a tube.
-   * Returns { x, y, clearance(px) } or null when there is no free area.
+   * Offset vector to the nearest free (non-mask) cell of `ring`, at or within
+   * `maxR` of (ax, ay); [0, 0] when the anchor itself is free, [null, r] when
+   * none is found inside the radius.
    */
-  function interiorPeak(mask, W, H) {
-    var INF = 0x7fff;
-    var d = new Int16Array(W * H);
-    var i, x, y;
-    for (i = 0; i < d.length; i++) d[i] = mask[i] ? 0 : INF;
-    for (x = 0; x < W; x++) { d[x] = 0; d[(H - 1) * W + x] = 0; }
-    for (y = 0; y < H; y++) { d[y * W] = 0; d[y * W + W - 1] = 0; }
-    // forward chamfer (3 = orthogonal, 4 = diagonal)
-    for (y = 1; y < H; y++) {
-      for (x = 1; x < W - 1; x++) {
-        var v = d[y * W + x];
-        if (!v) continue;
-        var m = v;
-        if (d[y * W + x - 1] + 3 < m) m = d[y * W + x - 1] + 3;
-        if (d[(y - 1) * W + x - 1] + 4 < m) m = d[(y - 1) * W + x - 1] + 4;
-        if (d[(y - 1) * W + x] + 3 < m) m = d[(y - 1) * W + x] + 3;
-        if (d[(y - 1) * W + x + 1] + 4 < m) m = d[(y - 1) * W + x + 1] + 4;
-        d[y * W + x] = m;
+  function findFreeNear(ring, W, H, ax, ay, maxR) {
+    if (!ring[ay * W + ax]) return [0, 0];
+    for (var r = 1; r <= maxR; r++) {
+      for (var yy = ay - r; yy <= ay + r; yy++) {
+        for (var xx = ax - r; xx <= ax + r; xx++) {
+          if (xx < 0 || yy < 0 || xx >= W || yy >= H) continue;
+          if (yy !== ay - r && yy !== ay + r && xx !== ax - r && xx !== ax + r) continue;
+          if (!ring[yy * W + xx]) return [xx - ax, yy - ay];
+        }
       }
     }
-    // backward chamfer
-    for (y = H - 2; y >= 0; y--) {
-      for (x = W - 2; x >= 1; x--) {
-        var v2 = d[y * W + x];
-        if (!v2) continue;
-        var m2 = v2;
-        if (d[y * W + x + 1] + 3 < m2) m2 = d[y * W + x + 1] + 3;
-        if (d[(y + 1) * W + x + 1] + 4 < m2) m2 = d[(y + 1) * W + x + 1] + 4;
-        if (d[(y + 1) * W + x] + 3 < m2) m2 = d[(y + 1) * W + x] + 3;
-        if (d[(y + 1) * W + x - 1] + 4 < m2) m2 = d[(y + 1) * W + x - 1] + 4;
-        d[y * W + x] = m2;
-      }
-    }
-    var maxd = 0;
-    for (var j = 0; j < d.length; j++) if (d[j] > maxd) maxd = d[j];
-    if (maxd === 0) return null;
+    return [null, maxR];
+  }
 
-    // Free pockets fully enclosed by the mask (not reachable from the image
-    // border through free pixels) are candidate opening interiors. The
-    // deepest pocket alone can lose to an exterior rock pocket — barnacle
-    // cream is inside the yellow band and speckles the opening interior,
-    // shredding its inscribed radius — so enclosed pockets are ranked by
-    // AREA instead (the opening dwarfs any nook between tube and algae).
-    // The enclosure test runs on a morphological CLOSING of the mask, so a
-    // breached ring (sun-flared section, dark sticker on the tube) still
-    // counts as enclosing; the radius escalates only while no sizable
-    // enclosed pocket appears, so a cleanly closed ring is judged as-is.
+  /**
+   * Ray origin: the geometric middle of the frame. The sampling protocol
+   * centers the quadrat in the shot, so from the middle the tube wall must
+   * be present in essentially every direction: 24 spokes march outward to
+   * the first mask pixel; two spokes may fail (a sun-flared or occluded
+   * section, a corner corridor), more means the middle is not within the
+   * quadrat and the caller flags the image and stops. Floor clutter (in-band
+   * barnacle cream, alga) is irrelevant — spokes stop at any wall — so
+   * speckled openings pass. The middle itself may sit on a patch; a nearby
+   * free cell (≤ 24 px) becomes the anchor, a solid mask mass fails.
+   * Returns { x, y, within, wallHits, wallSpokes } or null when buried.
+   */
+  function centerOrigin(mask, W, H) {
+    var cx = W >> 1, cy = H >> 1;
+    var near = findFreeNear(mask, W, H, cx, cy, 24);
+    if (near[0] === null) return null;
+    var ax = cx + near[0], ay = cy + near[1];
+
+    // spoke reach: corner diagonals of a centered opening sit farthest from
+    // the middle (~0.42·sqrt(W·H) at a full-frame quadrat), so reach a bit
+    // past that but stay well inside the image half-diagonal
+    var K = 24, maxT = Math.round(0.55 * Math.sqrt(W * H)), hits = 0;
+    for (var k = 0; k < K; k++) {
+      var th = (k / K) * 2 * Math.PI;
+      var dx = Math.cos(th), dy = Math.sin(th);
+      var hit = false;
+      for (var t = 4; t <= maxT; t += 2) {
+        var xi = (ax + dx * t) | 0, yi = (ay + dy * t) | 0;
+        if (xi < 0 || yi < 0 || xi >= W || yi >= H) break; // left the image
+        if (mask[yi * W + xi]) { hit = true; break; }
+      }
+      if (hit) hits++;
+    }
+    // tolerate small breaches/occlusions AND floor specks (in-band barnacle
+    // cream/kelp read as premature walls) — a middle genuinely outside the
+    // opening shows edge-escapes / long open corridors instead
+    return { x: ax, y: ay, within: hits >= K - 4, wallHits: hits, wallSpokes: K };
+  }
+
+  /**
+   * Largest free pocket enclosed by the mask (border flood over a
+   * ring-closed mask, the closing radius escalating while no sizable pocket
+   * appears) — used to strip in-band floor blobs that lie fully inside the
+   * opening (real tube structures always connect to the ring).
+   * Returns { lbl, pocketId } or null when the ring admits no such pocket.
+   */
+  function originPocket(mask, W, H) {
     var diag = Math.sqrt(W * H);
-    var minArea = Math.max(1200, 0.012 * W * H);
-    var bestPeak = null;
-    for (var ri = 0; ri <= 4 && !bestPeak; ri++) {
+    var minArea = Math.max(1200, 0.012 * W * H); // ignore speck-sized bubbles
+    for (var ri = 0; ri <= 4; ri++) {
       var rad = ri === 0 ? 0 : Math.round(diag * (0.007 + 0.005 * (ri - 1)));
       var ringMask = rad ? morphMask(morphMask(mask, W, H, rad, true), W, H, rad, false) : mask;
       var lbl = new Int32Array(W * H); // 0 unvisited, 1 escaped-to-border, >=2 comp id
       var stack = new Int32Array(W * H);
       var top = 0;
-      for (x = 0; x < W; x++) {
+      for (var x = 0; x < W; x++) {
         if (!ringMask[x]) { lbl[x] = 1; stack[top++] = x; }
         var b2 = (H - 1) * W + x;
         if (!ringMask[b2]) { lbl[b2] = 1; stack[top++] = b2; }
       }
-      for (y = 0; y < H; y++) {
+      for (var y = 0; y < H; y++) {
         var lidx = y * W, ridx = y * W + W - 1;
         if (!ringMask[lidx]) { lbl[lidx] = 1; stack[top++] = lidx; }
         if (!ringMask[ridx]) { lbl[ridx] = 1; stack[top++] = ridx; }
@@ -339,132 +350,28 @@
         if (iy < H - 1 && !ringMask[i2 + W] && !lbl[i2 + W]) { lbl[i2 + W] = 1; stack[top++] = i2 + W; }
       }
       var nComp = 1, compArea = [0, 0];
-      for (var j5 = 0; j5 < lbl.length; j5++) {
-        if (lbl[j5] || ringMask[j5]) continue;
+      for (var j = 0; j < lbl.length; j++) {
+        if (lbl[j] || ringMask[j]) continue;
         nComp++;
-        var head2 = 0, tail2 = 0;
-        stack[tail2++] = j5; lbl[j5] = nComp;
-        while (head2 < tail2) {
-          var i3 = stack[head2++];
+        var head = 0, tail = 0;
+        stack[tail++] = j; lbl[j] = nComp;
+        while (head < tail) {
+          var i3 = stack[head++];
           compArea[nComp] = (compArea[nComp] || 0) + 1;
           var ix2 = i3 % W, iy2 = (i3 / W) | 0;
-          if (ix2 > 0 && !ringMask[i3 - 1] && !lbl[i3 - 1]) { lbl[i3 - 1] = nComp; stack[tail2++] = i3 - 1; }
-          if (ix2 < W - 1 && !ringMask[i3 + 1] && !lbl[i3 + 1]) { lbl[i3 + 1] = nComp; stack[tail2++] = i3 + 1; }
-          if (iy2 > 0 && !ringMask[i3 - W] && !lbl[i3 - W]) { lbl[i3 - W] = nComp; stack[tail2++] = i3 - W; }
-          if (iy2 < H - 1 && !ringMask[i3 + W] && !lbl[i3 + W]) { lbl[i3 + W] = nComp; stack[tail2++] = i3 + W; }
+          if (ix2 > 0 && !ringMask[i3 - 1] && !lbl[i3 - 1]) { lbl[i3 - 1] = nComp; stack[tail++] = i3 - 1; }
+          if (ix2 < W - 1 && !ringMask[i3 + 1] && !lbl[i3 + 1]) { lbl[i3 + 1] = nComp; stack[tail++] = i3 + 1; }
+          if (iy2 > 0 && !ringMask[i3 - W] && !lbl[i3 - W]) { lbl[i3 - W] = nComp; stack[tail++] = i3 - W; }
+          if (iy2 < H - 1 && !ringMask[i3 + W] && !lbl[i3 + W]) { lbl[i3 + W] = nComp; stack[tail++] = i3 + W; }
         }
       }
-      var bestComp = 0, bestArea = minArea; // ignore speck-sized bubbles
+      var bestComp = 0, bestArea = minArea;
       for (var cc = 2; cc <= nComp; cc++) {
         if (compArea[cc] > bestArea) { bestArea = compArea[cc]; bestComp = cc; }
       }
-      if (!bestComp) continue;
-
-      // Origin = the pocket's AREA centroid — robust when the interior is
-      // littered with in-band barnacle/alga specks, which pull the deepest
-      // chamfer plateau toward whichever corner has the cleanest floor and
-      // starve the facing tube of rays. Fall back to the deepest plateau
-      // cells when the centroid is outside the free area or hugs a wall.
-      var cxs = 0, cys = 0, cn = 0;
-      for (var j8 = 0; j8 < lbl.length; j8++) {
-        if (lbl[j8] !== bestComp) continue;
-        cxs += j8 % W; cys += (j8 / W) | 0; cn++;
-      }
-      if (!cn) continue;
-      var gx0 = Math.round(cxs / cn), gy0 = Math.round(cys / cn);
-      var maxdb = 0;
-      for (var j6 = 0; j6 < d.length; j6++) {
-        if (lbl[j6] !== bestComp || mask[j6]) continue; // raw chamfer only valid on raw-free px
-        if (d[j6] > maxdb) maxdb = d[j6];
-      }
-      // anchor on the free floor near the centroid: walk outward from the
-      // centroid collecting the deepest cells within an expanding radius
-      // (the exact centroid cell itself may sit on an in-band alga patch)
-      var sxb = 0, syb = 0, nb = 0, R = (maxdb / 3) * 0.35;
-      while (R < maxdb) {
-        var thrb2 = 0, cand = 0;
-        for (var j7 = 0; j7 < d.length; j7++) {
-          if (lbl[j7] !== bestComp || mask[j7]) continue;
-          var qx = j7 % W, qy = (j7 / W) | 0;
-          if ((qx - gx0) * (qx - gx0) + (qy - gy0) * (qy - gy0) > R * R) continue;
-          if (d[j7] > thrb2) thrb2 = d[j7];
-          cand++;
-        }
-        if (!cand) { R *= 1.6; continue; }
-        // mean of the deepest cells inside the radius
-        for (var j9 = 0; j9 < d.length; j9++) {
-          if (lbl[j9] !== bestComp || mask[j9] || d[j9] < thrb2 - 2) continue;
-          var qx2 = j9 % W, qy2 = (j9 / W) | 0;
-          if ((qx2 - gx0) * (qx2 - gx0) + (qy2 - gy0) * (qy2 - gy0) > R * R) continue;
-          sxb += qx2; syb += qy2; nb++;
-        }
-        if (nb) break;
-        R *= 1.6; // extra safety (thrb2 found cells must exist, but guard anyway)
-      }
-      if (!nb) continue;
-      bestPeak = { x: sxb / nb, y: syb / nb, clearance: maxdb / 3, enclosed: true,
-                   pocketLbl: lbl, pocketId: bestComp };
+      if (bestComp) return { lbl: lbl, pocketId: bestComp };
     }
-    if (bestPeak) return bestPeak;
-
-    // fallback: tube ring still breached (no sizable enclosed pocket) — score deep
-    // pockets by ring enclosure (mask wall reached within ~2 radii;
-    // escapes to the image border score ~0), enclosure dominates the score
-    // and depth tiebreaks.
-    // fallback: dedupe deep cells on a coarse grid to bound ring sampling
-    var thr = Math.max(maxd - 2, (maxd * 0.7) | 0);
-    var seen = new Uint8Array(W * H);
-    var GRID = 8;
-    var GW = ((W / GRID) | 0) + 1;
-    var cands = [];
-    for (var j2 = 0; j2 < d.length; j2++) {
-      if (d[j2] < thr) continue;
-      var gx = ((j2 % W) / GRID) | 0, gy = (((j2 / W) | 0) / GRID) | 0;
-      if (seen[gy * GW + gx]) continue;
-      seen[gy * GW + gx] = 1;
-      cands.push(j2);
-    }
-    if (!cands.length) return null;
-
-    function ringScore(px, py, r) {
-      var K = 24, hits = 0;
-      for (var k = 0; k < K; k++) {
-        var th = (k / K) * 2 * Math.PI;
-        var dx = Math.cos(th), dy = Math.sin(th);
-        var hit = false, escape = false;
-        for (var t = r * 0.75; t <= r * 2.2; t += 3) {
-          var xi = (px + dx * t) | 0, yi = (py + dy * t) | 0;
-          if (xi < 0 || yi < 0 || xi >= W || yi >= H) { escape = true; break; }
-          if (mask[yi * W + xi]) { hit = true; break; }
-        }
-        if (hit && !escape) hits++;
-      }
-      return hits / K;
-    }
-
-    var bestCell = -1, bestScore = -1, bestCov = 0;
-    for (var c = 0; c < cands.length; c++) {
-      var j3 = cands[c];
-      var px2 = j3 % W, py2 = (j3 / W) | 0, r3 = d[j3] / 3;
-      if (r3 < 6) continue;
-      var cov = ringScore(px2, py2, r3);
-      var sc = cov * 2 + (d[j3] / maxd);
-      if (sc > bestScore) { bestScore = sc; bestCell = j3; bestCov = cov; }
-    }
-    if (bestCell < 0) return null;
-
-    // plateau mean around the winning pocket
-    var sx = 0, sy = 0, n = 0;
-    var bx = bestCell % W, by = (bestCell / W) | 0;
-    var nearR = Math.max(12, (d[bestCell] / 3) * 0.35);
-    for (var j4 = 0; j4 < d.length; j4++) {
-      if (d[j4] < thr) continue;
-      var qx = j4 % W, qy = (j4 / W) | 0;
-      if ((qx - bx) * (qx - bx) + (qy - by) * (qy - by) > nearR * nearR) continue;
-      sx += qx; sy += qy; n++;
-    }
-    if (!n) { sx = bx; sy = by; n = 1; }
-    return { x: sx / n, y: sy / n, clearance: d[bestCell] / 3, ring: bestCov };
+    return null;
   }
 
   /** Mask post-processing hook (currently: highlight-aware tube fill). */
@@ -701,40 +608,53 @@
 
     var mk = buildMask(scaled, opts);
     floodHints(mk, scaled, opts);
-    // Ray origin: the deepest inscribed point of the opening when there is
-    // enough free area, else the mask centroid.  The centroid is biased by
-    // whatever green structures lie near/over the frame (e.g. a PVC side-arm
-    // lying inside the opening or thick tubes), which starves whole sides of
-    // rays and leaves RANSAC without opposing edges; the inscribed peak
-    // restores an even ray distribution.
-    var center = mk.centroid || { x: W / 2, y: H / 2 };
-    var peak = interiorPeak(mk.mask, W, H);
+    // Ray origin: the geometric middle of the frame (see centerOrigin) — the
+    // protocol centers the quadrat in the shot, so the tube wall must be
+    // visible from the middle in essentially every direction; otherwise the
+    // image is flagged and detection stops (within stays false below).
+    var center = { x: W / 2, y: H / 2 };
+    var org = centerOrigin(mk.mask, W, H);
+    var rays = [];
     // Barnacle-cream / alga patches inside the color band litter the opening:
-    // they steal rays (their edges seed bogus RANSAC lines) and distort the
-    // origin. With the pocket known, strip mask components that lie fully
-    // inside it (real tube structures always connect to the ring) and
-    // re-derive the origin from the cleaned mask.
-    if (peak && peak.enclosed && peak.pocketId) {
-      if (stripPocketBlobs(mk.mask, W, H, peak.pocketLbl, peak.pocketId)) {
-        peak = interiorPeak(mk.mask, W, H);
+    // they steal rays (their edges seed bogus RANSAC lines). With an enclosed
+    // pocket known (best-effort; the middle-edge spokes already gate the
+    // origin), strip mask components that lie fully inside it.
+    if (org && org.within) {
+      var pk = originPocket(mk.mask, W, H);
+      if (pk && stripPocketBlobs(mk.mask, W, H, pk.lbl, pk.pocketId) && org) {
+        pk = originPocket(mk.mask, W, H) || pk;
       }
+      rays = castRays(scaled, mk.mask, { x: org.x, y: org.y }, opts).filter(Boolean);
     }
-    var peakUsed = false;
-    if (peak && peak.clearance >= 6) { center = peak; peakUsed = true; }
 
-    var rays = castRays(scaled, mk.mask, center, opts).filter(Boolean);
-
-    // denser, more permissive retry in hard lighting
-    if (rays.length < opts.nRays * 0.4) {
+    // denser, more permissive retry in hard lighting (a more forgiving mask
+    // can also restore the wall spokes and rescue the origin)
+    if (!org || !org.within || rays.length < opts.nRays * 0.4) {
       var opts2 = Object.assign({}, opts, { nRays: opts.nRays * 2, satMin: opts.satMin * 0.8, valMin: Math.max(0.05, opts.valMin * 0.8) });
       var mk2 = buildMask(scaled, opts2);
       floodHints(mk2, scaled, opts2);
-      var peak2 = interiorPeak(mk2.mask, W, H);
-      var center2 = (peak2 && peak2.clearance >= 6) ? peak2 : (mk2.centroid || { x: W / 2, y: H / 2 });
-      var rays2 = castRays(scaled, mk2.mask, center2, opts2).filter(Boolean);
-      if (rays2.length > rays.length) {
-        rays = rays2; mk = mk2; center = center2; peakUsed = !!peak2;
+      var org2 = centerOrigin(mk2.mask, W, H);
+      var rays2 = [];
+      if (org2 && org2.within) {
+        var pk2 = originPocket(mk2.mask, W, H);
+        if (pk2 && stripPocketBlobs(mk2.mask, W, H, pk2.lbl, pk2.pocketId)) {
+          pk2 = originPocket(mk2.mask, W, H) || pk2;
+        }
+        rays2 = castRays(scaled, mk2.mask, { x: org2.x, y: org2.y }, opts2).filter(Boolean);
+        if (rays2.length > rays.length) { rays = rays2; mk = mk2; org = org2; }
       }
+    }
+
+    if (!org || !org.within) {
+      return {
+        ok: false, confidence: 0, quad: null, scaledQuad: null,
+        metrics: {}, flags: [], confParts: {},
+        center: center, greenMask: mk.mask, scaled: scaled, scale: scale,
+        _rays: [], lines: [],
+        diagnostics: { timeMs: Date.now() - t0, rayHits: 0, linesFound: 0, reason:
+          'quadrat opening not centered in the photo — the frame middle must sit inside the opening'
+            + (org && org.wallHits != null ? ' (wall seen in ' + org.wallHits + '/' + org.wallSpokes + ' directions)' : '') }
+      };
     }
 
     // tube-width proxy (a 25th-percentile run — tube hit points are the
@@ -750,9 +670,10 @@
     var out = {
       ok: false, confidence: 0, quad: null, scaledQuad: null,
       metrics: {}, flags: [], confParts: {},
-      center: center, greenMask: mk.mask, scaled: scaled, scale: scale,
+      center: { x: org.x, y: org.y }, greenMask: mk.mask, scaled: scaled, scale: scale,
       _rays: rays,
-      centerIsInscribed: peakUsed, clearance: peakUsed ? +peak.clearance.toFixed(1) : null,
+      originEnclosed: true, originAnchor: { x: org.x, y: org.y },
+      wallSpokes: { hits: org.wallHits, total: org.wallSpokes },
       lines: lines.map(function (l) {
         return { n: l.n, d: l.d, dir: l.dir, c: l.c, spread: l.spread,
                  nInl: l.inliers ? l.inliers.length : 0, pts: l.inliers };
@@ -1180,7 +1101,7 @@
     VERSION: VERSION,
     DEFAULTS: DEFAULTS,
     detectQuadrat: detectQuadrat,
-    interiorPeak: interiorPeak,
+    centerOrigin: centerOrigin,
     warpToSquare: warpToSquare,
     boxScale: boxScale,
     buildMask: buildMask,

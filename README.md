@@ -29,7 +29,7 @@ have a separate manual):
   Puerto Madryn / Puerto Pirámides 2025) with park rangers, scientists and
   coastal communities.
 - **The frame**: a 20 mm thermo-fusion (Fusiogas-type) PVC structure holds an
-  **Olympus TG-6/7** camera (1/4"-20 UNC, 25 mm screw; 12 MP; built-in GPS)
+  **OM System Tough TG-7** camera (1/4"-20 UNC, 25 mm screw; 12 MP; built-in GPS)
   **42 cm** above the substrate, photographing the **25 × 25 cm** opening —
   exactly the square this tool auto-crops.
 - **Sampling design**: 3 sites per locality (> 1 km apart), 3 intertidal
@@ -129,19 +129,16 @@ Node validation harness:
    and pale sand a mint one). The best-confidence detection wins.
 3. Flood the mask through bright, weakly-tinted "highlight" pixels (direct-sun
    shots blow the PVC out to near-white; the fill is bounded by masked rims).
-4. Cast 128 rays from the open interior's origin — chosen as the largest
-   free pocket *enclosed* by the mask (border flood; a morphological
-   ring-closing tolerates a breached frame such as a sun-flared section or a
-   dark sticker on the tube). A raw deepest-chamfer selection is not enough:
-   the mask centroid is biased, and on yellow frames barnacle-cream specks
-   inside the opening shred its inscribed radius so an exterior rock pocket
-   can win by depth. Mask components lying entirely inside the pocket
-   (barnacle cream, alga clumps — real tube structures always connect to the
-   ring) are stripped so they cannot steal rays, and the origin is anchored
-   on the free floor near the pocket's area centroid. From the origin, each
-   ray keeps up to two sufficiently long runs of mask pixels (gap-tolerant;
-   a ray blocked by interior clutter still contributes a tube-rim point)
-   and marks inner-edge points of the opening.
+4. Cast 128 rays from the frame middle. The protocol centers the quadrat in
+   the shot, so the middle must sit within the opening: 24 spokes from the
+   middle must reach the tube mask in (nearly) every direction — if not, the
+   image is flagged and detection stops. Mask components lying entirely
+   inside the opening's enclosed pocket (barnacle cream, alga clumps — real
+   tube structures always connect to the ring) are stripped so they cannot
+   steal rays. From the origin, each ray keeps up to two sufficiently long
+   runs of mask pixels (gap-tolerant; a ray blocked by interior clutter
+   still contributes a tube-rim point) and marks inner-edge points of the
+   opening.
 5. Sequential RANSAC fits up to 8 lines, merging parallel near-duplicates
    (the inner and outer rims of the same tube); they are grouped into two
    perpendicular orientation families (k-means on circular angle) and the best
