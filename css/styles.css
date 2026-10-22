@@ -26,6 +26,8 @@ body {
   padding: 10px 16px 12px;
 }
 .topbar h1 { font-size: 17px; margin: 0 0 8px; }
+.topbar h1 .ver { color: var(--muted); font-size: 11px; font-weight: 400;
+                  vertical-align: 2px; margin-left: 4px; letter-spacing: .3px; }
 .topbar .actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .topbar input[type=text] {
   min-width: 230px; flex: 0 1 300px;

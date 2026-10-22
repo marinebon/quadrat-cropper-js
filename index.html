@@ -3,12 +3,11 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Quadrat Cropper</title>
-<link rel="stylesheet" href="css/styles.css">
+<title>Quadrat Cropper</title><link rel="stylesheet" href="css/styles.css">
 </head>
 <body>
 <header class="topbar">
-  <h1>Quadrat Cropper</h1>
+  <h1>Quadrat Cropper <span id="verTag" class="ver"></span></h1>
   <div class="actions">
     <button id="btnAddFiles" type="button">＋ Add images</button>
     <button id="btnAddDrive" type="button">⊕ Add from Google Drive</button>
@@ -207,7 +206,7 @@
 
 <footer class="foot muted small">
   <div class="foot-line">
-    <span>Detector: pure-JS HSV mask → ray-casting → sequential RANSAC → per-edge refinement.</span>
+    <span>Detector: pure-JS HSV mask → ray-casting → sequential RANSAC → per-edge refinement. <span id="footVer"></span></span>
     <span>Auto-accept ≥ 0.80 · review &lt; 0.80 · manual &lt; 0.55.</span>
   </div>
   <div class="foot-line">

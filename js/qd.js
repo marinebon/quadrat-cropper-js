@@ -30,6 +30,11 @@
 })(typeof self !== 'undefined' ? self : this, function () {
   'use strict';
 
+  // Detector version — bumped when qd.js or its calling contract changes.
+  // app.js surfaces this in the page title / header so users can confirm
+  // they are running a fresh build (not a cached one).
+  var VERSION = '1.3.0';
+
   var DEFAULTS = {
     workWidth: 1152,
     nRays: 128,
@@ -865,7 +870,11 @@
       var sideMed = median(sideLens);
       if (sideMed < 0.25 * Math.min(W, H)) { dbgReason('sideMed'); return null; }
       var sideCV = (Math.max.apply(null, sideLens) - Math.min.apply(null, sideLens)) / sideMed;
-      if (sideCV > 0.55) { dbgReason('sideCV:' + sideCV.toFixed(2)); return null; }
+      // The opening is physically square; foreshortening from reasonable
+      // camera tilt stays under ~20% side spread. Combos beyond this are
+      // missed-corner assemblies (e.g. an interior kelp edge standing in
+      // for a rail) and must be rejected, not accepted with a warning.
+      if (sideCV > 0.35) { dbgReason('sideCV:' + sideCV.toFixed(2)); return null; }
       // --- opening validity: just inside each line = opening (not green),
       // just outside = tube (green). A line sitting inside a tube (biased
       // inward into PVC, e.g. past mask holes) fails the inside probe hard.
@@ -1168,6 +1177,7 @@
   }
 
   return {
+    VERSION: VERSION,
     DEFAULTS: DEFAULTS,
     detectQuadrat: detectQuadrat,
     interiorPeak: interiorPeak,

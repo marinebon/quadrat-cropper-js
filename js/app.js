@@ -12,7 +12,7 @@
     busy: false
   };
   var ui = {};
-  var USE_WIDTH = 1152;   // detection working width (same as Node harness)
+  var MAX_DETECT_MP = 24;   // safety cap for absurd sources (~96MB RGBA)
 
   function el(id) { return document.getElementById(id); }
 
@@ -36,8 +36,16 @@
       helpDialog: el('helpDialog'), helpClose: el('btnHelpClose'),
       folderDialog: el('folderDialog'),
       folderZip: el('btnFolderZip'), folderSignin: el('btnFolderSignin'),
-      copyOrigin: el('btnCopyOrigin')
+      copyOrigin: el('btnCopyOrigin'),
+      verTag: el('verTag'), footVer: el('footVer')
     };
+
+    // Version shown in title/tab + header so testers can confirm they run
+    // a fresh build (detects stale-cache reports like 2026-10-21 MEDIO.zip).
+    var VER = QD.VERSION || '?';
+    document.title = 'Quadrat Cropper v' + VER;
+    ui.verTag.textContent = 'v' + VER;
+    ui.footVer.textContent = 'v' + VER;
 
     ui.addFiles.addEventListener('click', function () { ui.fileInput.click(); });
     ui.fileInput.addEventListener('change', function () {
@@ -286,15 +294,22 @@
     ui.exportBtn.disabled = false;
   }
 
-  async function decodeScaled(it, targetW) {
+  // Detection input: keep the ORIGINAL-resolution pixels. detectQuadrat()
+  // does its own single box-average resample internally (work width 1152),
+  // so the browser path and the Node/test path see identical detector
+  // input (previously drawImage resampled to 1152 here with unknown
+  // interpolation, diverging from the fixtures on borderline images).
+  var MAX_DETECT_MP = 24;   // safety cap for absurd sources (~96MB RGBA)
+  async function decodeScaled(it) {
     var bmp = await createImageBitmap(it.blob, { imageOrientation: 'from-image' });
     var natW = bmp.width, natH = bmp.height;
-    var scale = Math.min(1, targetW / bmp.width);
-    var w = Math.max(2, Math.round(bmp.width * scale));
-    var h = Math.max(2, Math.round(bmp.height * scale));
+    var mp = (natW * natH) / 1e6;
+    var scale = mp > MAX_DETECT_MP ? Math.sqrt(MAX_DETECT_MP / mp) : 1;
+    var w = Math.max(2, Math.round(natW * scale));
+    var h = Math.max(2, Math.round(natH * scale));
     var cv = document.createElement('canvas');
     cv.width = w; cv.height = h;
-    cv.getContext('2d').drawImage(bmp, 0, 0, w, h);
+    cv.getContext('2d', { willReadFrequently: true }).drawImage(bmp, 0, 0, w, h);
     bmp.close && bmp.close();
     return { cv: cv, natW: natW, natH: natH };
   }
@@ -303,7 +318,7 @@
     if (!it.meta) it.meta = QDMeta.joinMeta(it.name, state.csvs);
     if (!it.exif) it.exif = await QDExif.fromBlob(it.blob);
 
-    var dec = await decodeScaled(it, USE_WIDTH);
+    var dec = await decodeScaled(it);
     var id = dec.cv.getContext('2d').getImageData(0, 0, dec.cv.width, dec.cv.height);
     var img = { width: id.width, height: id.height, data: new Uint8Array(id.data.buffer) };
     var det = QD.detectQuadrat(img, {});
