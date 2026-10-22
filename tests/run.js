@@ -6,6 +6,9 @@
  *
  *   "crop"   — must detect: ok=true, confidence ≥ minConf, quad inside the
  *              image, roughly square (max/min side ≤ 1.35), sane size.
+ *              `"xfail": true` marks a known-limitation case: its current
+ *              failure keeps CI green (XFAIL) and a surprise fix is flagged
+ *              (XPASS — tighten the expectation then).
  *   "reject" — must fail cleanly (ok=false): pre-cropped images must be
  *              flagged, never force-cropped.
  *
@@ -107,17 +110,23 @@ function main() {
     process.exit(1);
   }
 
-  let failed = 0;
+  let failed = 0, xfailed = 0, xpass = 0, passed = 0;
   console.log('fixture'.padEnd(22), 'expect '.padEnd(8), 'got'.padEnd(22), 'ms', '  result');
   for (const file of cases) {
     const e = EXPECTED[path.basename(file)];
     const r = runCase(file, e.expect, e.minConf || 0);
     const got = (r.ok ? 'ok ' + r.conf : 'reject ') + (r.flags.length ? ' [' + r.flags.join(',') + ']' : '');
-    const verdict = r.pass ? 'PASS' : 'FAIL: ' + r.fail;
-    if (!r.pass) failed++;
+    let verdict;
+    if (!r.pass && e.xfail) { verdict = 'XFAIL (known limitation): ' + r.fail; xfailed++; }
+    else if (!r.pass) { verdict = 'FAIL: ' + r.fail; failed++; }
+    else if (e.xfail) { verdict = 'XPASS (fixed — tighten the expectation)'; xpass++; }
+    else { verdict = 'PASS'; passed++; }
     console.log(r.name.padEnd(22), e.expect.padEnd(8), got.padEnd(22), String(r.ms), ' ', verdict);
   }
-  console.log('\n' + (cases.length - failed) + '/' + cases.length + ' passed');
+  console.log('\n' + passed + ' passed'
+    + (xpass ? ', ' + xpass + ' xpass (tighten expectations)' : '')
+    + (xfailed ? ', ' + xfailed + ' xfail (known limitations)' : '')
+    + (failed ? ', ' + failed + ' FAILED' : '') + ' / ' + cases.length + ' total');
   process.exit(failed ? 1 : 0);
 }
 

@@ -6,6 +6,10 @@
   "P1120599.JPG": { "expect": "crop", "minConf": 0.8, "note": "classic sample, downscaled to 1600px" },
   "AP161685.JPG": { "expect": "crop", "minConf": 0.8, "note": "MONTEMAR yellow quadrat, shaded with white label breaching the tube (drives the yellow pass + ring-closing interior peak)" },
   "AP161633.JPG": { "expect": "crop", "minConf": 0.8, "note": "MONTEMAR MEDIO yellow quadrat, interior ulva/barnacle clumps fused to the tube (drives interior-blob strip + two-candidate rays + duplicate-line merge)" },
+  "AP161645.JPG": { "expect": "crop", "minConf": 0.8, "xfail": true, "note": "MEDIO yellow: bottom edge floats ~40% up the opening and the bottom-right corner lands on a kelp patch instead of the frame (user-reported). RANSAC accepted an in-opening texture edge as the bottom rail; needs corner-select/normal-validation fixes below" },
+  "AP161634.JPG": { "expect": "crop", "minConf": 0.8, "xfail": true, "note": "MEDIO yellow: user saw a wild shape in the browser; at fixture res (double downscale 4000→1600→1152) it rejects outright while a single-step downscale detects it 0.89-0.91 — decode/resample-path divergence, not a mask problem" },
+  "AP161655.JPG": { "expect": "crop", "minConf": 0.8, "note": "MEDIO yellow, clean image: detects 0.92-0.95 in the Node harness at both downscale paths; user reported a miss in the browser — likely stale cached qd.js, kept to watch the browser/Node decode equivalence" },
+  "AP161666.JPG": { "expect": "crop", "minConf": 0.8, "xfail": true, "note": "MEDIO yellow, dark kelp canopy: top edge of the accepted quad drifts into the kelp clump (tilted, non-square, accepted ~0.63 at full res / 0.59 at fixture res) — texture edges outrank the real top rail" },
   "PB110048.JPG": { "expect": "reject", "note": "pre-cropped quadrat output — must fail cleanly" },
   "PB110110.JPG": { "expect": "reject", "note": "pre-cropped quadrat output — must fail cleanly" }
 }
