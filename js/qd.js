@@ -15,9 +15,13 @@
  *  4. Cast rays from the frame middle as the origin — the protocol centers
  *     the quadrat in the shot, so the middle must sit inside an enclosed
  *     pocket of the mask (interior clutter stripped away); otherwise the
- *     image is flagged and detection stops. Each ray keeps up to two
- *     sufficiently long mask runs (gap-tolerant) as points on INNER edges
- *     of the quadrat opening (ignores small moss specks / outer structure).
+ *     image is flagged and detection stops. Each ray records up to six
+ *     sufficiently long mask runs (gap-tolerant) as candidate points on
+ *     INNER edges of the quadrat opening — interior kelp glints may sit
+ *     between the middle and the walls, so a two-crossing budget could miss
+ *     the wall entirely. Traversal is capped at ~0.82*sqrt(W*H) (beyond the
+ *     size prior's maximum wall reach) so background kelp and off-frame
+ *     structures never enter the pool.
  *  5. Sequential RANSAC fits up to 8 inner-edge lines, merging parallel
  *     near-duplicates (the two rims of the same tube); group them into two
  *     orientation families (mod PI on tangent angle) and pick best pair each.
@@ -35,7 +39,7 @@
   // Detector version — bumped when qd.js or its calling contract changes.
   // app.js surfaces this in the page title / header so users can confirm
   // they are running a fresh build (not a cached one).
-  var VERSION = '1.4.2';
+  var VERSION = '1.5.0';
 
   var DEFAULTS = {
     workWidth: 1152,
@@ -54,6 +58,14 @@
     rayTol: 2.6,
     minSupport: 4,
     refineIters: 2,
+    // ray radius cap: the middle sits inside the opening and the size prior
+    // bounds a wall at ~0.75*sqrt(W*H), so nothing beyond this radius can be
+    // a corner of the opening — cropping rays there keeps background kelp
+    // and off-frame structures out of the line pool
+    rayCapSw: 0.82,
+    // tube crossings recorded per ray — kelp glints between the middle and a
+    // wall must not consume the wall's slot
+    maxRayCross: 6,
     autoThreshold: 0.80,
     reviewThreshold: 0.55,
   };
@@ -385,25 +397,33 @@
   }
 
   /**
-   * Cast rays from `center`; up to two qualifying mask crossings are kept per
-   * ray (the first, which in a blob-littered interior may be an in-band
-   * alga/barnacle patch, and the next) so a ray blocked by interior clutter
-   * still contributes a tube-rim point. Wrong candidates are pruned later by
-   * the opening probes / quad scoring. Rays that ride a tube to the image
-   * border get a borderRun hit (frame continues off-image).
+   * Cast rays from `center`; up to opts.maxRayCross qualifying mask crossings
+   * are kept per ray. Recording every crossing matters: in a kelp-festooned
+   * interior, in-band glints sit between the middle and the walls, so a ray
+   * limited to its first two crossings could have both slots eaten by
+   * interior clutter and never contribute the wall rim point at all. Wrong
+   * extra candidates are pruned later by the opening probes / quad scoring.
+   * Traversal stops at opts.rayCapSw*sqrt(W*H): the
+   * middle sits inside the opening and the size prior bounds any wall at
+   * ~0.75*sqrt(W*H), so beyond the cap nothing can be a corner of the opening
+   * — background kelp / off-frame structures never reach the pool. Rays that
+   * ride a tube out to the cap (or the image border) get a borderRun hit
+   * (frame continues off-region).
    */
   function castRays(scaled, mask, center, opts) {
     var W = scaled.width, H = scaled.height;
     var minRun = Math.max(4, opts.minRunSw * Math.sqrt(W * H));
+    var rayCap = (opts.rayCapSw || 0.82) * Math.sqrt(W * H);
+    var maxCross = opts.maxRayCross || 6;
     var gapTol = opts.rayGap || 5; // tolerate mask holes inside a tube
-    var step = 1.0, maxDim = Math.sqrt(W * W + H * H);
+    var step = 1.0;
     var hits = [];
     for (var k = 0; k < opts.nRays; k++) {
       var th = (k / opts.nRays) * 2 * Math.PI;
       var dx = Math.cos(th), dy = Math.sin(th);
       var firstT = -1, greenTot = 0, gap = 0, band = [];
-      var found1 = null; // first accepted crossing along this ray
-      for (var t = step; t < maxDim; t += step) {
+      var perRay = 0;
+      for (var t = step; t < rayCap; t += step) {
         var xi = (center.x + dx * t) | 0, yi = (center.y + dy * t) | 0;
         if (xi < 0 || yi < 0 || xi >= W || yi >= H) break; // left image: frame continuing off-frame
         var m = mask[yi * W + xi];
@@ -417,28 +437,21 @@
           if (gap > gapTol) {
             if (greenTot >= minRun) {
               // accepting crossing: inner-edge point = first mask pixel along ray
-              var cand = { x: center.x + dx * firstT, y: center.y + dy * firstT, run: greenTot, band: band, angle: th };
-              if (!found1) {
-                found1 = cand;
-                firstT = -1; greenTot = 0; gap = 0; band = [];
-                continue;
+              hits.push({ x: center.x + dx * firstT, y: center.y + dy * firstT, run: greenTot, band: band, angle: th });
+              perRay++;
+              if (perRay >= maxCross) {
+                firstT = -1;
+                break;
               }
-              hits.push(found1); hits.push(cand);
-              found1 = null;
-              break;
             }
-            // rejected crossing (too small = speck): re-arm
+            // re-arm for the next crossing (accepted or rejected speck)
             firstT = -1; greenTot = 0; gap = 0; band = [];
           }
         }
       }
-      // ray survived to image border inside a tube — treat as reaching frame off-image
-      if (found1) {
-        if (greenTot >= minRun) found1.borderRun = true;
-        hits.push(found1); // keep the lone first crossing anyway
-      } else if (firstT >= 0 && greenTot >= minRun) {
-        // rode a tube to (or past) the image border without completing a
-        // crossing: frame continues off-image
+      if (firstT >= 0 && greenTot >= minRun) {
+        // rode a tube out to the ray cap (or the image border) without
+        // completing a crossing: frame continues off-region
         hits.push({ x: center.x + dx * firstT, y: center.y + dy * firstT, run: greenTot, band: band, angle: th, borderRun: true });
       }
     }
@@ -817,7 +830,12 @@
       var med = median(runs);
       var mad = median(runs.map(function (r) { return Math.abs(r - med); }));
       return {
-        support: clamp01(l.inliers.length / Math.max(3, rays.length / 10)),
+        // a given rail can be sighted by a ray at most once, so wall support
+        // is measured against the ray budget (nRays/5 ≈ the arc a side
+        // subtends in a typical framing) — NOT against the pool size, which
+        // grows with interior clutter and would penalise kelp photos for
+        // working correctly
+        support: clamp01(l.inliers.length / Math.max(3, opts.nRays / 5)),
         tubeCV: clamp01(mad / Math.max(6, 0.4 * med)),
         lenFrac: l.spread || 0,
         tubeMed: med
