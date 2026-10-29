@@ -44,6 +44,23 @@ function decodeJpeg(file) {
 function checkQuad(det) {
   const m = det.metrics;
   if (!m || !m.sideLens || m.sideLens.length !== 4) return 'no side metrics';
+  // Coordinate contract: det.quad is in SOURCE pixels, det.scaledQuad in the
+  // ~1152-px work space. The app crops with det.quad directly, so a quad that
+  // leaks work-space coordinates silently crops the upper-left of any
+  // original-resolution photo (all real photos are wider than the work width).
+  const q = det.quad, sq = det.scaledQuad, sc = det.scaled;
+  if (!q || q.length !== 4 || !sq || sq.length !== 4 || !sc || !image) {
+    return 'missing quad coordinate data';
+  }
+  const kx = image.width / sc.width, ky = image.height / sc.height;
+  for (let i = 0; i < 4; i++) {
+    if (Math.abs(sq[i].x) > 10 && Math.abs(q[i].x / sq[i].x - kx) > 0.02 * kx) {
+      return 'quad not in source pixels (x: expected work×' + kx.toFixed(3) + ')';
+    }
+    if (Math.abs(sq[i].y) > 10 && Math.abs(q[i].y / sq[i].y - ky) > 0.02 * ky) {
+      return 'quad not in source pixels (y: expected work×' + ky.toFixed(3) + ')';
+    }
+  }
   const sides = m.sideLens.map(x => Math.abs(x));
   const mx = Math.max.apply(null, sides), mn = Math.min.apply(null, sides);
   if (!mn) return 'degenerate quad';

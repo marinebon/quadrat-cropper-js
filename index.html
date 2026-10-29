@@ -97,10 +97,11 @@
     <li><b>Wait for the scan</b>: green ring = confident auto-crop
         (confidence ≥ 0.80), amber = review suggested (0.55–0.80),
         red = needs manual corners (&lt; 0.55 or detection failed).</li>
-    <li><b>Review</b>: click any thumbnail to see the crop — failed ones show
-        the source photo so you can see why nothing was detected. For red/amber
-        ones, drag the corner markers onto the inner corners of the frame,
-        then <em>Apply &amp; re-crop</em>.</li>
+    <li><b>Review</b>: click any thumbnail to open the full photo with the
+        crop's corner markers and a live crop preview alongside. Drag the
+        markers onto the inner corners of the frame, then
+        <em>Apply &amp; re-crop</em> (failed detections open the same page so
+        you can place the markers by hand).</li>
     <li><b>Export ZIP</b> — no ticking needed: every crop with
         <b>≥ 80% confidence</b> is included automatically, plus any you
         adjusted manually (adjusting a red/amber one always includes it).
@@ -187,18 +188,6 @@
         <button id="btnEditorApply" type="button" class="primary">Apply &amp; re-crop</button>
       </div>
     </aside>
-  </div>
-</dialog>
-
-<!-- preview dialog (click a thumbnail) -->
-<dialog id="previewDialog" class="dialog wide">
-  <h2 id="previewTitle">Crop</h2>
-  <div class="preview-body">
-    <img id="previewImg" alt="cropped quadrat">
-    <pre id="previewMeta" class="small"></pre>
-  </div>
-  <div class="dialog-actions">
-    <button id="btnPreviewClose" type="button" class="primary">Close</button>
   </div>
 </dialog>
 

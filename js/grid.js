@@ -41,9 +41,9 @@
     } else {
       tw.appendChild(el('div', 'thumb placeholder'));
     }
-    tw.title = item.ok ? 'Click to view crop / edit corners'
+    tw.title = item.ok ? 'Click to view the full photo with corners / edit'
       : item.status === 'failed' ? 'No frame found — click to fix corners manually'
-      : 'Click to inspect';
+      : 'Click to inspect / edit corners';
     tw.addEventListener('click', function () { hooks.onThumb && hooks.onThumb(item); });
     card.appendChild(tw);
 

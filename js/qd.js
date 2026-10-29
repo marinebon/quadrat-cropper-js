@@ -39,7 +39,7 @@
   // Detector version — bumped when qd.js or its calling contract changes.
   // app.js surfaces this in the page title / header so users can confirm
   // they are running a fresh build (not a cached one).
-  var VERSION = '1.5.0';
+  var VERSION = '1.5.2';
 
   var DEFAULTS = {
     workWidth: 1152,
@@ -659,7 +659,7 @@
       var passOpts = (nm === 'custom')
         ? Object.assign({}, opts, { color: 'custom' })
         : Object.assign({}, opts, FRAME_COLORS[nm]);
-      var res = runPass(scaled, passOpts, t0);
+      var res = runPass(scaled, passOpts, t0, scale);
       res.diagnostics.color = passOpts.color;
       passResults.push(res);
       if (res.confidence > bestConf + 1e-9) { best = res; bestName = passOpts.color; bestConf = res.confidence; }
@@ -680,10 +680,12 @@
     return best;
   }
 
-  /** One full detection pipeline over `scaled`, parameterized by tube color. */
-  function runPass(scaled, opts, t0) {
+  /** One full detection pipeline over `scaled`, parameterized by tube color.
+   * `srcScale` is the work-space → source-pixel factor used when the caller
+   * had to resample the input down to work width (1 when it already fits). */
+  function runPass(scaled, opts, t0, srcScale) {
     var srcW = scaled.width, srcH = scaled.height;
-    var scale = 1;
+    var scale = srcScale || 1;
     var W = scaled.width, H = scaled.height;
 
     var mk = buildMask(scaled, opts);

@@ -50,9 +50,11 @@ To run it locally:
 
 ```bash
 cd quadrat-cropper-js
-python3 -m http.server 8080
-# open http://localhost:8080
+make preview       # serves the repo root on http://localhost:8080
 ```
+
+(or, without make: `python3 -m http.server 8080`). Use another port with
+`make preview PORT=8000`.
 
 The app explains itself: a **welcome screen appears on first visit** and a **?**
 button in the header re-opens the same instructions any time. No README needed
@@ -75,9 +77,12 @@ Each thumbnail shows:
 - amber ring — usable but flagged, review suggested (0.55–0.80)
 - red ring — needs manual corners (< 0.55) or no frame found
 
-Click a thumbnail: strong detections open a crop preview; weak ones open the
-corner editor (drag the four markers onto the inner corners of the PVC
-opening, live preview, `Enter` to apply, `R` to reset, `Esc` to close).
+Click a thumbnail: the review page opens on the **full uncropped photo** with
+the crop's four corner markers and a live crop preview alongside. Drag the
+markers onto the inner corners of the PVC opening, then Apply (or press
+`Enter`; `R` resets to the auto-detected corners, `Esc` closes). This works
+the same for confident crops and for detections that need a fix — nothing is
+changed unless you move a marker.
 
 **⬇ Export ZIP** — there is nothing to tick: every crop with **confidence ≥ 0.80**
 is included automatically, plus every one you adjusted manually. Red/amber
@@ -195,6 +200,7 @@ negatives cleanly rejected.
 
 ```
 index.html          app shell
+Makefile            make preview — serve the site locally
 css/styles.css      styling
 js/qd.js            detection core (browser + Node compatible)
 js/app.js           orchestration, queue, ingestion UI

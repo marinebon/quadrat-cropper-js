@@ -27,9 +27,6 @@
       progressText: el('progressText'), stats: el('stats'),
       settingsDialog: el('settingsDialog'), clientIdInput: el('clientIdInput'),
       saveSettings: el('btnSaveSettings'),
-      previewDialog: el('previewDialog'), previewImg: el('previewImg'),
-      previewTitle: el('previewTitle'), previewMeta: el('previewMeta'),
-      previewClose: el('btnPreviewClose'),
       // onboarding / zero-setup paths
       help: el('btnHelp'), dropHelp: el('btnDropHelp'),
       welcomeDialog: el('welcomeDialog'), welcomeOk: el('btnWelcomeOk'),
@@ -61,7 +58,6 @@
     ui.saveSettings.addEventListener('click', saveSettings);
     ui.exportBtn.addEventListener('click', doExport);
     ui.clear.addEventListener('click', clearAll);
-    ui.previewClose.addEventListener('click', function () { ui.previewDialog.close(); });
 
     // onboarding & help
     ui.help.addEventListener('click', function () { ui.helpDialog.showModal(); });
@@ -374,8 +370,6 @@
       outCv.toBlob(function (b) { res(b); }, 'image/jpeg', 0.92);
     });
     it.thumbURL = thumbDataUrl(outCv, 340);
-    if (it.previewURL) URL.revokeObjectURL(it.previewURL);
-    it.previewURL = URL.createObjectURL(it.cropBlob);
     it.cropCanvas = null; // release the full crop canvas (blob retained)
   }
 
@@ -411,6 +405,14 @@
 
   /** Manual re-crop after corner edit. */
   async function reCropManual(it, quad) {
+    // Apply on an untouched detection is a no-op: re-encoding would only lose
+    // a little quality and would mislabel an auto crop as manual in the
+    // manifest.
+    var prev = it.corners || (it.det && (it.det.quadFull || it.det.quad));
+    var moved = !prev || quad.some(function (c, i) {
+      return Math.hypot(c.x - prev[i].x, c.y - prev[i].y) > 1;
+    });
+    if (!moved) return;
     try {
       await makeCrop(it, quad, 'manual');
       it.status = 'done';
@@ -427,32 +429,11 @@
   // ---------------------------------------------------------------- grid/ui
 
   function onThumbClick(item) {
-    if (!item.det) return; // still scanning
-    if (QDGrid.tierOf(item) === 'ok') {
-      openPreview(item);
-      return;
-    }
-    // review / manual / failed → review page: the full photo with the
-    // suggested box and draggable corner markers
+    if (!item.det || item.status !== 'done') return; // still scanning
+    // every item opens the review page: the full uncropped photo with the
+    // crop's corner markers (draggable) and a live crop preview alongside
     QDEditor.open(item, function (quad) { reCropManual(item, quad); });
   }
-
-  function openPreview(item) {
-    ui.previewTitle.textContent = item.name +
-      (item.source === 'manual' ? ' (manual)' : ' — ' + Math.round(item.conf * 100) + '%');
-    if (item.previewURL) {
-      // item.previewURL is owned by the item (makeCrop revokes and replaces
-      // it when the crop is rebuilt) — never revoke or replace it here
-      ui.previewImg.src = item.previewURL;
-    }
-    ui.previewMeta.textContent = JSON.stringify({
-      confidence: it_conf(item), flags: item.flags || [],
-      corners: item.corners, meta: item.meta, exif: item.exif,
-      metrics: item.det && item.det.metrics, timeMs: item.det && item.det.diagnostics && item.det.diagnostics.timeMs
-    }, null, 1);
-    ui.previewDialog.showModal();
-  }
-  function it_conf(item) { return item.conf ? Math.round(item.conf * 1000) / 1000 : null; }
 
   function render() {
     ui.grid.innerHTML = '';
@@ -491,8 +472,8 @@
     if (!sel.length) {
       alert('No images ready to export.\n\n'
         + 'Crops are included automatically when confidence is at least 80%.\n'
-        + 'For the red/amber ones, click the thumbnail and adjust the corner\n'
-        + 'markers — a manually adjusted crop is always included.');
+        + 'Click a thumbnail to check the corners on the full photo and adjust\n'
+        + 'them — a manually adjusted crop is always included.');
       return;
     }
     var skipped = state.items.length - sel.length;
