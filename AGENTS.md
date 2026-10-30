@@ -9,8 +9,8 @@ npm install     # once — jpeg-js
 npm test
 ```
 
-`npm test` must report **14 passed / 14 total** (add cases to
-`tests/expected.json` when you add fixtures). CI runs the same command on
+`npm test` must be green across every case in `tests/expected.json` (**16
+today** — add cases there when you add fixtures). CI runs the same command on
 every push, so a red suite is never a "later" problem.
 
 If a change touches the UI (not just `js/qd.js`), also load the page through
@@ -38,3 +38,9 @@ every `crop` fixture; keep it that way when touching the pipeline.
   footer show it so testers can confirm they are not on a cached build.
 - `make preview` serves the repo root on <http://localhost:8080> (port 8080
   matches the Google OAuth authorized origin for Drive access).
+- `make publish` is the deploy path: it runs the suite, pushes `main` (GitHub
+  Pages serves the repo root of `main`, so the push *is* the build), then polls
+  the live `js/qd.js` until it serves the pushed `QD.VERSION`. It refuses a
+  dirty checkout — the suite validates the working tree but the push ships the
+  committed tree — so commit first; `make deploy-status` compares local and
+  live versions.

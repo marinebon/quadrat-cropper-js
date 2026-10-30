@@ -44,7 +44,7 @@ have a separate manual):
 
 The app is already live at
 **<https://marinebon.org/quadrat-cropper-js/>** (GitHub Pages from `main`,
-pushes deploy automatically).
+pushes deploy automatically — see [Publishing](#publishing)).
 
 To run it locally:
 
@@ -182,6 +182,25 @@ folder into `tools/results/` for visual inspection, and
 `node tools/qdbg.js <image>…` prints per-stage diagnostics (ray hits, fitted
 lines, orientation families, combo rejections).
 
+## Publishing
+
+GitHub Pages serves the repo root of `main` (legacy build, no `gh-pages`
+branch), so a push *is* the deploy:
+
+```bash
+make publish        # suite → push main → wait for the live build
+make deploy-status  # compare the local and live QD.VERSION
+```
+
+`make publish` will not run on a dirty checkout: `npm test` validates the
+working tree, but a push ships the committed tree, so publishing uncommitted
+edits would deploy something the suite never saw — commit first. It also
+refuses when `origin/main` has moved ahead (pull/rebase first), warns about
+untracked files that will not be deployed, and finishes by polling the live
+`js/qd.js` until it serves the pushed `QD.VERSION` (bounded by
+`DEPLOY_WAIT`, default 180 s), so a stale CDN or a broken build is visible
+immediately.
+
 ## Validation harness (Node)
 
 `tools/test.js` runs the same `js/qd.js` against raw photos and known
@@ -200,7 +219,7 @@ negatives cleanly rejected.
 
 ```
 index.html          app shell
-Makefile            make preview — serve the site locally
+Makefile            make preview (serve) / test / publish (deploy to Pages)
 css/styles.css      styling
 js/qd.js            detection core (browser + Node compatible)
 js/app.js           orchestration, queue, ingestion UI
