@@ -39,7 +39,7 @@
   // Detector version — bumped when qd.js or its calling contract changes.
   // app.js surfaces this in the page title / header so users can confirm
   // they are running a fresh build (not a cached one).
-  var VERSION = '1.5.2';
+  var VERSION = '1.5.3';
 
   var DEFAULTS = {
     workWidth: 1152,
@@ -66,6 +66,13 @@
     // tube crossings recorded per ray — kelp glints between the middle and a
     // wall must not consume the wall's slot
     maxRayCross: 6,
+    // Second-opinion mask opening radius (work px) applied when the input had
+    // to be downscaled hard (source/work ratio below maskSmoothBelow): a
+    // full-resolution sensor leaves algae speckle at work scale that a phone-
+    // scale or downscaled photo never shows, so the detector gets a smoothed
+    // mask to compare against the sharp one (higher score wins).
+    maskSmooth: 3,
+    maskSmoothBelow: 0.5,
     autoThreshold: 0.80,
     reviewThreshold: 0.55,
   };
@@ -195,9 +202,17 @@
           if (h < 0) h += 360;
         }
         // bright, weakly tinted (or fully blown neutral) — highlight candidate
-        // tint family comes from the active tube color (opts.highlightHue*)
-        if (v >= 0.6 && s <= 0.25 &&
-            (h < 0 || (h >= (opts.highlightHueMin || 100) && h <= (opts.highlightHueMax || 200)))) {
+        // tint family comes from the active tube color (opts.highlightHue*).
+        // Saturation collapses on a sun-blown tube, and the hue of a
+        // near-neutral white is whatever the sensor clipped (e.g. slightly
+        // cyan after auto white balance) — often outside the tube's tint
+        // family. Those neutral highlights are accepted regardless of hue;
+        // only weakly tinted pixels (s > 0.08) must stay inside the family,
+        // which is what keeps bright sand/foam of a foreign tint out.
+        var hlMin = opts.highlightHueMin || 100, hlMax = opts.highlightHueMax || 200;
+        var neutral = s <= 0.08 && v >= 0.93;
+        if (v >= 0.6 && (neutral ||
+            (s <= 0.25 && (h < 0 || (h >= hlMin && h <= hlMax))))) {
           mask[j] = 1;
           queue[tail++] = j;
         }
@@ -238,6 +253,19 @@
       }
     }
     return out;
+  }
+
+  /**
+   * Morphological opening of the mask in place (erode then dilate): drops
+   * structures thinner than ~2r+1 px — algae glints that survive the
+   * downscale as in-band confetti and thin highlight leaks along shadow
+   * lines — while leaving the tube's body intact. Only used as a second
+   * opinion on high-resolution input (see detectQuadrat).
+   */
+  function smoothMask(mask, W, H, r) {
+    if (!r) return;
+    var opened = morphMask(morphMask(mask, W, H, r, false), W, H, r, true);
+    mask.set(opened);
   }
 
   /**
@@ -654,12 +682,25 @@
 
     var best = null, bestName = null, bestConf = -1;
     var passResults = [];
+    // A full-resolution sensor downscaled to work width leaves algae glints
+    // as in-band confetti and thin highlight leaks along shadow lines; both
+    // steal ray crossings and seed bogus lines. A morphologically opened mask
+    // (see smoothMask) recovers the tube-scale structure, but it also shaves
+    // a few px off fine rims. So it is a *second opinion*, not the default:
+    // score the sharp mask first and only prefer the smoothed pass when it
+    // actually scores higher. Off when the input is already near work size.
+    var smoothR = scale < (opts.maskSmoothBelow || 0.5) ? (opts.maskSmooth || 0) : 0;
     for (var pi = 0; pi < names.length; pi++) {
       var nm = names[pi];
       var passOpts = (nm === 'custom')
         ? Object.assign({}, opts, { color: 'custom' })
         : Object.assign({}, opts, FRAME_COLORS[nm]);
-      var res = runPass(scaled, passOpts, t0, scale);
+      var res = runPass(scaled, Object.assign({}, passOpts, { maskSmooth: 0 }), t0, scale);
+      if (smoothR) {
+        var resS = runPass(scaled, Object.assign({}, passOpts, { maskSmooth: smoothR }), t0, scale);
+        resS.diagnostics.smoothed = true;
+        if (resS.confidence > res.confidence) res = resS;
+      }
       res.diagnostics.color = passOpts.color;
       passResults.push(res);
       if (res.confidence > bestConf + 1e-9) { best = res; bestName = passOpts.color; bestConf = res.confidence; }
@@ -690,6 +731,7 @@
 
     var mk = buildMask(scaled, opts);
     floodHints(mk, scaled, opts);
+    if (opts.maskSmooth) smoothMask(mk.mask, W, H, opts.maskSmooth);
     // Ray origin: the geometric middle of the frame (see centerOrigin) — the
     // protocol centers the quadrat in the shot, so the tube wall must be
     // visible from the middle in essentially every direction; otherwise the
@@ -715,6 +757,9 @@
       var opts2 = Object.assign({}, opts, { nRays: opts.nRays * 2, satMin: opts.satMin * 0.8, valMin: Math.max(0.05, opts.valMin * 0.8) });
       var mk2 = buildMask(scaled, opts2);
       floodHints(mk2, scaled, opts2);
+      // NOTE: the retry mask is deliberately left sharp — it exists to recover
+      // faint PVC with a more permissive band, and opening it would erode the
+      // very pixels it is meant to rescue (measured: AP161666 quad accuracy).
       var org2 = centerOrigin(mk2.mask, W, H);
       var rays2 = [];
       if (org2 && org2.within) {
@@ -990,6 +1035,7 @@
     // a candidate that passes the rail tests joins its family and the
     // combination search reruns; the best-scoring quad across all refits wins.
     out._recovered = [];
+    out._recTry = [];
     if (!best) {
       var railMin = 0.15 * diagL;
       function isRailish(l) { return Math.abs(l.d - (ctr0.x * l.n.x + ctr0.y * l.n.y)) >= railMin; }
@@ -1025,10 +1071,10 @@
             if (Math.abs(lat) > Math.abs(q) * 1.2) continue; // ~±50° cone along the side
             corr.push(hp);
           }
-          if (corr.length < opts.minSupport) continue;
+          if (corr.length < opts.minSupport) { out._recTry.push('f' + fi + 's' + side + ':n=' + corr.length); continue; }
           var nl = corridorRail(corr, T[fi], opts, W, H);
-          if (!nl || (nl.spread || 0) < 0.2 * Math.min(W, H)) continue; // rail-length extent
-          if (!isRailish(nl)) continue; // texture crossing the middle is not a rail
+          if (!nl || (nl.spread || 0) < 0.2 * Math.min(W, H)) { out._recTry.push('f' + fi + 's' + side + ':spread=' + (nl ? Math.round(nl.spread) : 'null') + ' n=' + corr.length); continue; } // rail-length extent
+          if (!isRailish(nl)) { out._recTry.push('f' + fi + 's' + side + ':notrail d=' + Math.round(nl.d) + ' n=' + corr.length); continue; } // texture crossing the middle is not a rail
           var pm = nl.inliers[Math.floor(nl.inliers.length / 2)];
           var gapOK = true;
           for (var exi = 0; exi < mine.length; exi++) {
@@ -1037,7 +1083,7 @@
             if (!isRailish(mine[exi])) continue;
             if (Math.abs(pm.x * mine[exi].n.x + pm.y * mine[exi].n.y - mine[exi].d) < 0.06 * diagL) { gapOK = false; break; }
           }
-          if (!gapOK) continue; // duplicate rim of a known rail
+          if (!gapOK) { out._recTry.push('f' + fi + 's' + side + ':dup'); continue; } // duplicate rim of a known rail
           var sgn2 = ctr0.x * nl.n.x + ctr0.y * nl.n.y - nl.d;
           if (sgn2 < 0) { nl.n = { x: -nl.n.x, y: -nl.n.y }; nl.d = -nl.d; }
           mine.push(nl);
@@ -1050,6 +1096,7 @@
             out._recovered.push(fi);
           } else {
             mine.pop(); // refit didn't complete a valid quad — try the next side
+            out._recTry.push('f' + fi + 's' + side + ':nocombo' + (tryBest ? ' sc=' + tryBest.score.toFixed(3) : ''));
           }
         }
       }
@@ -1069,56 +1116,123 @@
     var sortedLines4 = best.expectedLines; // ordered by normal angle around the quad
     out._bestLines = sortedLines4.map(function (l) { return lines.indexOf(l); });
 
-    // --- edge position refinement ---
-    // Guessed lines sit slightly inside the PVC tube when the mask's first
-    // green pixel lands past shadowed/anti-aliased tube pixels.  Correct test:
-    // walk INWARD (toward the opening, +n) from the line; if green continues,
-    // the line lives in the tube and should move inward until green ends.
-    // Walking outward is intentionally not done (would grow into the tube).
+    // --- edge refinement: profile refit (position AND slope) ---
+    // A rail's RANSAC line blends inner-rim sightings with stray outer-rim
+    // hits (the first in-band pixel of a sun-blown tube is its OUTER rim) and
+    // kelp interference, so it can be tilted by a degree or two. Over a
+    // 400-500 px side that is a 10-20 px corner error — the classic "top-left
+    // corner pokes out of the frame, bottom-left corner cuts into the
+    // opening" skew. A shift-only refinement cannot fix a tilted fit, so
+    // re-place every edge from the mask itself: at stations along the edge,
+    // walk the mask profile across the tube and take the INWARD end of the
+    // tube run (the opening boundary), then robustly refit a straight line
+    // through those boundary points (outlier iterations drop kelp-fused or
+    // joint-obscured stations). Corners are the intersections of the refit
+    // lines, so a per-edge re-fit straightens the whole quad.
     (function refineEdges() {
       for (var e = 0; e < 4; e++) {
         var l = sortedLines4[e];
         var st = statsOf(l);
         var tube = st.tubeMed || 0.06 * Math.min(W, H);
-        var dmax = Math.min(Math.max(6, tube * 0.5), 0.06 * Math.min(W, H));
+        var win = Math.min(Math.max(10, tube * 0.9), 0.05 * Math.min(W, H));
         var half = l.spread / 2;
-        var samples = Math.max(7, Math.min(15, l.inliers.length));
-        var deltas = [];
+        var samples = Math.max(9, Math.min(19, Math.round(l.spread / 30)));
+        var edgePts = [], deltas = [];
         for (var q = 0; q < samples; q++) {
           var pr = (samples === 1) ? 0 : (-0.7 * half + (1.4 * half * q) / (samples - 1));
           var sx = l.c.x + pr * l.dir.x, sy = l.c.y + pr * l.dir.y;
-          // inward green run: contiguous green from d=0 inward (gaps <= 3)
-          var run = 0, gap = 0, lastGreen = -1;
-          for (var d = 1; d <= dmax; d += 2) {
-            var gx = sx + l.n.x * d, gy = sy + l.n.y * d;
-            if (gx < 8 || gy < 8 || gx > W - 9 || gy > H - 9) break;
-            if (isGreenAt(scaled, mk.mask, gx, gy, 4) >= 0.3) { run += 2; gap = 0; lastGreen = d; }
-            else if (++gap > 2) break;
+          // profile across the tube: -win (outside) .. +win (inside)
+          var run = null, runs = [];
+          for (var t = -win; t <= win; t += 1) {
+            var gx = sx + l.n.x * t, gy = sy + l.n.y * t;
+            var g = (gx < 6 || gy < 6 || gx > W - 7 || gy > H - 7) ? 0
+                  : (isGreenAt(scaled, mk.mask, gx, gy, 2) >= 0.3 ? 1 : 0);
+            if (g) {
+              if (!run) { run = { a: t, b: t }; runs.push(run); }
+              else run.b = t;
+            } else run = null;
           }
-          // contiguous green from the line until green ends
-          if (lastGreen >= 0) {
-            var clear = lastGreen + 1;
-            while (clear <= dmax) {
-              var hx = sx + l.n.x * clear, hy = sy + l.n.y * clear;
-              if (hx < 8 || hy < 8 || hx > W - 9 || hy > H - 9) break;
-              if (isGreenAt(scaled, mk.mask, hx, hy, 4) >= 0.3) { clear += 2; lastGreen = clear; }
-              else break;
+          // the tube run: the one straddling the line, else the nearest
+          var pick = null, nearest = 1e9;
+          for (var ri = 0; ri < runs.length; ri++) {
+            var r2 = runs[ri];
+            if (r2.b - r2.a < 4) continue;
+            var dd = (r2.a <= 0 && 0 <= r2.b) ? 0 : Math.min(Math.abs(r2.a), Math.abs(r2.b));
+            if (dd < nearest) { nearest = dd; pick = r2; }
+          }
+          // inner boundary unknown when the run is still green at the
+          // inward window end (kelp fused to the tube / line buried)
+          if (!pick || pick.b >= win - 1) { deltas.push(null); continue; }
+          var off = pick.b + 1;
+          deltas.push(off);
+          edgePts.push({ x: sx + l.n.x * off, y: sy + l.n.y * off });
+        }
+        var fit = null, bestN = 0;
+        var valid = deltas.filter(function (x) { return x !== null; });
+        if (edgePts.length >= 5) {
+          // RANSAC over the profile points: the rail's inner rim is one
+          // straight run of stations; a joint collar, kelp fused to the tube
+          // or a blown-out rim patch yields a second, offset cluster. A
+          // least-squares fit splits the difference and tilts the edge (the
+          // "top-left corner pokes out, bottom-left cuts in" skew), so pick
+          // the largest truly collinear subset instead — and only trust the
+          // slope correction when that subset covers most of the side.
+          var tolF = 2.0, bestIn = null;
+          for (var a1 = 0; a1 < edgePts.length; a1++) {
+            for (var b1 = a1 + 1; b1 < edgePts.length; b1++) {
+              var pa = edgePts[a1], pb = edgePts[b1];
+              if (Math.hypot(pb.x - pa.x, pb.y - pa.y) < 0.25 * l.spread) continue;
+              var seed = fitLineFromPoints([pa, pb]);
+              var inl = [];
+              for (var c1 = 0; c1 < edgePts.length; c1++)
+                if (lineDist(seed, edgePts[c1]) < tolF) inl.push(edgePts[c1]);
+              if (inl.length > bestN) { bestN = inl.length; bestIn = inl; }
             }
           }
-          deltas.push(lastGreen < 0 ? 0 : lastGreen);
+          if (bestIn && bestN >= Math.max(5, 0.8 * edgePts.length)) {
+            fit = fitLineFromPoints(bestIn);
+            for (var it3 = 0; it3 < 2; it3++) {
+              var inl3 = edgePts.filter(function (p) { return lineDist(fit, p) < tolF; });
+              if (inl3.length < 5) { fit = null; break; }
+              fit = fitLineFromPoints(inl3);
+            }
+          }
+          if (fit) {
+            // reject implausible refits (mask hijacked by a fused structure)
+            var sgnF = l.n.x * fit.n.x + l.n.y * fit.n.y;
+            if (sgnF < 0) { fit.n = { x: -fit.n.x, y: -fit.n.y }; fit.d = -fit.d; fit.dir = { x: -fit.dir.x, y: -fit.dir.y }; }
+            var dAng = Math.acos(Math.min(1, Math.abs(l.dir.x * fit.dir.x + l.dir.y * fit.dir.y)));
+            var shiftF = (l.c.x * fit.n.x + l.c.y * fit.n.y) - fit.d;
+            // a clean, long trend may legitimately correct a badly tilted
+            // fit by several degrees; a short/noisy one must not
+            if (dAng > 0.25 || Math.abs(shiftF) > 1.5 * win) fit = null;
+          }
         }
-        var shift = median(deltas);
-        var madS = median(deltas.map(function (x) { return Math.abs(x - shift); }));
-        var applied = 0;
-        if (shift >= 3 && madS <= 5 && shift < dmax * 0.85) {
-          applied = shift;
+        var applied;
+        if (fit) {
+          l.n = fit.n; l.d = fit.d; l.dir = fit.dir; l.c = fit.c;
+          // small inward safety margin: the mask's inner rim sits on the
+          // shaded/anti-aliased tube edge, keep the crop just clear of it
+          applied = Math.min(Math.max(2, 0.05 * st.tubeMed), 6);
+        } else {
+          // fallback (few clean stations): keep the fitted direction and move
+          // the line to the median measured boundary, as the old shift-only
+          // refinement did
+          var shiftM = median(valid);
+          var madM = median(valid.map(function (x) { return Math.abs(x - shiftM); }));
+          applied = 0;
+          if (valid.length >= 3 && Math.abs(shiftM) <= win * 0.9 && madM <= 5) applied = shiftM;
+          // light uniform inward safety margin (straight-line fits vs slightly
+          // bowed pipes, joint protrusions at corners)
+          applied += Math.min(Math.max(4, 0.08 * st.tubeMed), 10);
         }
-        // light uniform inward safety margin: hides residual tube/edge biases
-        // (straight-line fits vs slightly bowed pipes, joint protrusions at corners)
-        applied += Math.min(Math.max(4, 0.08 * st.tubeMed), 10);
         l.d += applied; // n points interior: inward move = l.d += t
         out._refine = out._refine || [];
-        out._refine.push(e, deltas.slice().sort(function (a, b) { return a - b; }).map(function (x) { return Math.round(x); }), 'tube', Math.round(st.tubeMed), 'applied', Math.round(applied));
+        // compact diag: per-station measured boundary offsets (null = no
+        // usable tube run), whether a slope refit was accepted and how many
+        // stations backed it, and the final inward move
+        out._refine.push({ e: e, win: win, deltas: deltas, fit: !!fit, bestN: bestN,
+          nEdgePts: edgePts.length, applied: applied });
       }
     })();
 
