@@ -33,10 +33,7 @@
       const commentLen = u16(buf, cdOff + 32);
       const lho = u32(buf, cdOff + 42);
       const nameBytes = buf.slice(cdOff + 46, cdOff + 46 + nameLen);
-      let name = '';
-      for (let i = 0; i < nameBytes.length; i++) {
-        name += nameBytes[i] < 128 ? String.fromCharCode(nameBytes[i]) : '_';
-      }
+      const name = decodeName(nameBytes, u16(buf, cdOff + 8));
       if (name.endsWith('/')) { // directory entry
         cdOff += 46 + nameLen + extraLen + commentLen;
         continue;
@@ -72,6 +69,25 @@
       cdOff += 46 + nameLen + extraLen + commentLen;
     }
     return out;
+  }
+
+  /**
+   * Entry names: UTF-8 when general-purpose bit 11 is set (Google Drive,
+   * macOS, 7-Zip) — and in practice also when the bytes merely *are* valid
+   * UTF-8. Previously every non-ASCII byte became '_', so
+   * "Pirámides_P1120589.JPG" turned into "Pir__mides_P1120589.JPG": the
+   * exported crop got a different name and the CSV join by filename missed.
+   */
+  function decodeName(bytes, gpFlags) {
+    let ascii = true;
+    for (let i = 0; i < bytes.length; i++) if (bytes[i] >= 128) { ascii = false; break; }
+    if (ascii) return String.fromCharCode.apply(null, bytes);
+    try {
+      return new TextDecoder('utf-8', { fatal: !(gpFlags & 0x800) }).decode(bytes);
+    } catch (e) {
+      // legacy (CP437 / Latin-1) archive: Latin-1 is the closest built-in
+      return new TextDecoder('iso-8859-1').decode(bytes);
+    }
   }
 
   function guessMime(name) {

@@ -26,22 +26,24 @@
     var parts = [], central = [], offset = 0;
     function u16(v) { return [v & 255, (v >>> 8) & 255]; }
     function u32(v) { return [v & 255, (v >>> 8) & 255, (v >>> 16) & 255, (v >>> 24) & 255]; }
-    function latinBytes(s) {
-      var a = [];
-      for (var i = 0; i < s.length; i++) {
-        var c = s.charCodeAt(i);
-        if (c > 255) a.push(0x5f, 0x5f); else a.push(c);
-      }
-      return a;
-    }
+    // Names are written as UTF-8 with general-purpose bit 11 (0x0800) set.
+    // The previous Latin-1 bytes without that flag are read as CP437 by
+    // Windows Explorer / Info-ZIP, so "Pirámides_…_crop.jpg" came out as
+    // "Pir├ímides…", and any char > U+00FF became "__".
+    var UTF8_FLAG = 0x0800;
+    var enc = new TextEncoder();
+    // DOS date 0 is invalid (month/day 0); stamp entries with the export time
+    var d = new Date();
+    var dosTime = (d.getHours() << 11) | (d.getMinutes() << 5) | (d.getSeconds() >> 1);
+    var dosDate = ((d.getFullYear() - 1980) << 9) | ((d.getMonth() + 1) << 5) | d.getDate();
     entries.forEach(function (e) {
-      var nameB = latinBytes(e.name);
+      var nameB = Array.from(enc.encode(e.name));
       var crc = crc32(e.data);
-      var localHeader = [].concat(u32(0x04034b50), u16(20), u16(0), u16(0), u16(0), u16(0),
+      var localHeader = [].concat(u32(0x04034b50), u16(20), u16(UTF8_FLAG), u16(0), u16(dosTime), u16(dosDate),
         u32(crc), u32(e.data.length), u32(e.data.length),
         u16(nameB.length), u16(0), nameB);
       parts.push(new Uint8Array(localHeader), e.data);
-      central.push([].concat(u32(0x02014b50), u16(20), u16(20), u16(0), u16(0), u16(0), u16(0),
+      central.push([].concat(u32(0x02014b50), u16(20), u16(20), u16(UTF8_FLAG), u16(0), u16(dosTime), u16(dosDate),
         u32(crc), u32(e.data.length), u32(e.data.length),
         u16(nameB.length), u16(0), u16(0), u16(0), u16(0), u32(0), u32(offset), nameB));
       offset += localHeader.length + e.data.length;

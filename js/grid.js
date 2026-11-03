@@ -94,8 +94,13 @@
   }
 
   function updateStats(items) {
-    var n = { total: items.length, auto: 0, review: 0, manual: 0, failed: 0 };
+    // `adjusted` = crops the user already fixed by hand. They share the
+    // 'manual' colour tier with low-confidence detections, but they must not
+    // be counted under "need manual corners" — that count would never go
+    // down as the user works through the batch.
+    var n = { total: items.length, auto: 0, review: 0, manual: 0, failed: 0, adjusted: 0 };
     items.forEach(function (it) {
+      if (it.source === 'manual' && it.cropBlob) { n.adjusted++; return; }
       var t = tierOf(it);
       if (t === 'ok') n.auto++;
       else if (t === 'review' || t === 'manual') n[t === 'review' ? 'review' : 'manual']++;

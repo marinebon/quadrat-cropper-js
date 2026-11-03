@@ -39,7 +39,7 @@
   // Detector version — bumped when qd.js or its calling contract changes.
   // app.js surfaces this in the page title / header so users can confirm
   // they are running a fresh build (not a cached one).
-  var VERSION = '1.5.3';
+  var VERSION = '1.5.5';
 
   var DEFAULTS = {
     workWidth: 1152,
