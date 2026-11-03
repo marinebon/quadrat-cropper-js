@@ -39,7 +39,7 @@
   // Detector version — bumped when qd.js or its calling contract changes.
   // app.js surfaces this in the page title / header so users can confirm
   // they are running a fresh build (not a cached one).
-  var VERSION = '1.5.3';
+  var VERSION = '1.9.0';
 
   var DEFAULTS = {
     workWidth: 1152,
@@ -1355,6 +1355,64 @@
     return out;
   }
 
+  /**
+   * Best-fit SQUARE through four corners (TL,TR,BR,BL), least squares over a
+   * similarity transform (translation + rotation + uniform scale, no shear).
+   * The camera is rigidly mounted on the frame, so the opening is a square
+   * in the image; any other shape is a detection error, not geometry.
+   * Returns { quad, side, residual } — residual = max corner shift / side.
+   */
+  function fitSquare(quad) {
+    var C = [[-1, -1], [1, -1], [1, 1], [-1, 1]];
+    var mx = 0, my = 0, i;
+    for (i = 0; i < 4; i++) { mx += quad[i].x / 4; my += quad[i].y / 4; }
+    var a = 0, b = 0;
+    for (i = 0; i < 4; i++) {
+      var px = quad[i].x - mx, py = quad[i].y - my;
+      a += C[i][0] * px + C[i][1] * py;
+      b += C[i][0] * py - C[i][1] * px;
+    }
+    a /= 8; b /= 8;
+    var out = C.map(function (c) {
+      return { x: mx + a * c[0] - b * c[1], y: my + b * c[0] + a * c[1] };
+    });
+    var side = 2 * Math.hypot(a, b);
+    var res = 0;
+    for (i = 0; i < 4; i++) res = Math.max(res, Math.hypot(out[i].x - quad[i].x, out[i].y - quad[i].y));
+    return { quad: out, side: side, residual: side > 0 ? res / side : 1 };
+  }
+
+  /** Scale a quad about its centroid (f = 0.95 → 5 % smaller side). */
+  function scaleQuad(quad, f) {
+    var mx = 0, my = 0;
+    quad.forEach(function (c) { mx += c.x / 4; my += c.y / 4; });
+    return quad.map(function (c) { return { x: mx + (c.x - mx) * f, y: my + (c.y - my) * f }; });
+  }
+
+  /**
+   * Keep a quad inside [0,W-1]×[0,H-1]: translate first, shrink about its
+   * centre only if it cannot fit. Returns { quad, moved, shrunk }.
+   */
+  function fitInside(quad, W, H) {
+    var q = quad.map(function (c) { return { x: c.x, y: c.y }; });
+    var xs = q.map(function (c) { return c.x; }), ys = q.map(function (c) { return c.y; });
+    var minX = Math.min.apply(null, xs), maxX = Math.max.apply(null, xs);
+    var minY = Math.min.apply(null, ys), maxY = Math.max.apply(null, ys);
+    var maxW = W - 1, maxH = H - 1, shrunk = false;
+    var s = Math.min(1, maxW / (maxX - minX || 1), maxH / (maxY - minY || 1));
+    if (s < 1) {
+      var cx = (minX + maxX) / 2, cy = (minY + maxY) / 2;
+      q = q.map(function (c) { return { x: cx + (c.x - cx) * s, y: cy + (c.y - cy) * s }; });
+      minX = cx + (minX - cx) * s; maxX = cx + (maxX - cx) * s;
+      minY = cy + (minY - cy) * s; maxY = cy + (maxY - cy) * s;
+      shrunk = true;
+    }
+    var dx = minX < 0 ? -minX : (maxX > maxW ? maxW - maxX : 0);
+    var dy = minY < 0 ? -minY : (maxY > maxH ? maxH - maxY : 0);
+    if (dx || dy) q = q.map(function (c) { return { x: c.x + dx, y: c.y + dy }; });
+    return { quad: q, moved: !!(dx || dy), shrunk: shrunk };
+  }
+
   function solveH(pairs) {
     var M = [], i;
     for (i = 0; i < 8; i++) M.push(new Array(9).fill(0));
@@ -1426,6 +1484,9 @@
     castRays: castRays,
     ransacLines: ransacLines,
     solveH: solveH,
+    fitSquare: fitSquare,
+    fitInside: fitInside,
+    scaleQuad: scaleQuad,
     applyH: applyH,
     isGreenAt: isGreenAt,
     polyArea: polyArea,
