@@ -10,8 +10,12 @@
 
   /** Tier (color class) for an item. */
   function tierOf(item) {
+    if (item.excluded) return 'excluded';
     if (item.status === 'processing') return 'processing';
     if (item.status === 'failed') return 'failed';
+    // hand-cropped in the editor → its own (blue) tier, not the red "manual"
+    // one, which means "still needs manual corners"
+    if (item.source === 'manual' && item.cropBlob) return 'adjusted';
     if (item.cornerOverride && item.source !== 'auto') return 'manual';
     if (item.source === 'manual') return 'manual';
     if (!item.ok) return 'failed';
@@ -32,6 +36,21 @@
     card.dataset.tier = tierOf(item);
     card.dataset.id = item.id;
 
+    // exclude / include toggle: excluded photos never go into the zip
+    // (they stay listed in manifest.csv as "excluded") — click again to undo
+    if (item.status !== 'queued' && item.status !== 'processing') {
+      var xb = el('button', 'excl');
+      xb.type = 'button';
+      xb.textContent = item.excluded ? '↺' : '✕';
+      xb.title = item.excluded ? 'Include this photo again' : 'Exclude this photo from the ZIP';
+      xb.setAttribute('aria-label', xb.title);
+      xb.addEventListener('click', function (e) {
+        e.stopPropagation();
+        hooks.onExclude && hooks.onExclude(item);
+      });
+      card.appendChild(xb);
+    }
+
     var tw = el('div', 'thumb-wrap');
     if (item.thumbURL) {
       var img = el('img', 'thumb');
@@ -47,8 +66,13 @@
     tw.addEventListener('click', function () { hooks.onThumb && hooks.onThumb(item); });
     card.appendChild(tw);
 
-    if (item.ok) {
-      var badge = el('div', 'badge' + (tierOf(item) === 'manual' ? ' manual' : ''));
+    if (item.excluded) {
+      var bx = el('div', 'badge excluded');
+      bx.textContent = 'excluded';
+      card.appendChild(bx);
+    } else if (item.ok) {
+      var t = tierOf(item);
+      var badge = el('div', 'badge' + (t === 'adjusted' ? ' adjusted' : t === 'manual' ? ' manual' : ''));
       badge.textContent = item.cornerOverride || item.source === 'manual'
         ? 'manual'
         : Math.round(item.conf * 100) + '%';
@@ -94,8 +118,14 @@
   }
 
   function updateStats(items) {
-    var n = { total: items.length, auto: 0, review: 0, manual: 0, failed: 0 };
+    // `adjusted` = crops the user already fixed by hand. They share the
+    // 'manual' colour tier with low-confidence detections, but they must not
+    // be counted under "need manual corners" — that count would never go
+    // down as the user works through the batch.
+    var n = { total: items.length, auto: 0, review: 0, manual: 0, failed: 0, adjusted: 0, excluded: 0 };
     items.forEach(function (it) {
+      if (it.excluded) { n.excluded++; return; }
+      if (it.source === 'manual' && it.cropBlob) { n.adjusted++; return; }
       var t = tierOf(it);
       if (t === 'ok') n.auto++;
       else if (t === 'review' || t === 'manual') n[t === 'review' ? 'review' : 'manual']++;

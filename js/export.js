@@ -26,25 +26,31 @@
     var parts = [], central = [], offset = 0;
     function u16(v) { return [v & 255, (v >>> 8) & 255]; }
     function u32(v) { return [v & 255, (v >>> 8) & 255, (v >>> 16) & 255, (v >>> 24) & 255]; }
-    function latinBytes(s) {
-      var a = [];
-      for (var i = 0; i < s.length; i++) {
-        var c = s.charCodeAt(i);
-        if (c > 255) a.push(0x5f, 0x5f); else a.push(c);
-      }
-      return a;
-    }
+    // Names are written as UTF-8 with general-purpose bit 11 (0x0800) set.
+    // The previous Latin-1 bytes without that flag are read as CP437 by
+    // Windows Explorer / Info-ZIP, so "Pirámides_…_crop.jpg" came out as
+    // "Pir├ímides…", and any char > U+00FF became "__".
+    var UTF8_FLAG = 0x0800;
+    var enc = new TextEncoder();
+    // DOS date 0 is invalid (month/day 0); stamp entries with the export time
+    var d = new Date();
+    var dosTime = (d.getHours() << 11) | (d.getMinutes() << 5) | (d.getSeconds() >> 1);
+    var dosDate = ((d.getFullYear() - 1980) << 9) | ((d.getMonth() + 1) << 5) | d.getDate();
     entries.forEach(function (e) {
-      var nameB = latinBytes(e.name);
-      var crc = crc32(e.data);
-      var localHeader = [].concat(u32(0x04034b50), u16(20), u16(0), u16(0), u16(0), u16(0),
-        u32(crc), u32(e.data.length), u32(e.data.length),
+      var nameB = Array.from(enc.encode(e.name));
+      // e.data may be a Blob with a precomputed e.crc / e.size (see
+      // exportZip): Blob parts are references, so a multi-GB zip is not
+      // copied into JS memory.
+      var size = e.size != null ? e.size : e.data.length;
+      var crc = e.crc != null ? e.crc : crc32(e.data);
+      var localHeader = [].concat(u32(0x04034b50), u16(20), u16(UTF8_FLAG), u16(0), u16(dosTime), u16(dosDate),
+        u32(crc), u32(size), u32(size),
         u16(nameB.length), u16(0), nameB);
       parts.push(new Uint8Array(localHeader), e.data);
-      central.push([].concat(u32(0x02014b50), u16(20), u16(20), u16(0), u16(0), u16(0), u16(0),
-        u32(crc), u32(e.data.length), u32(e.data.length),
+      central.push([].concat(u32(0x02014b50), u16(20), u16(20), u16(UTF8_FLAG), u16(0), u16(dosTime), u16(dosDate),
+        u32(crc), u32(size), u32(size),
         u16(nameB.length), u16(0), u16(0), u16(0), u16(0), u32(0), u32(offset), nameB));
-      offset += localHeader.length + e.data.length;
+      offset += localHeader.length + size;
     });
     var cdSize = 0;
     central.forEach(function (c) { cdSize += c.length; });
@@ -90,7 +96,7 @@
       }
       var row = [
         fileName,
-        it.ok ? (it.source === 'manual' ? 'manual' : (it.conf >= 0.8 ? 'auto' : 'review'))
+        it.excluded ? 'excluded' : it.ok ? (it.source === 'manual' ? 'manual' : (it.conf >= 0.8 ? 'auto' : 'review'))
               : (it.status === 'processing' ? 'review' : (it.status || 'failed')),
         it.ok ? Math.round(it.conf * 1000) / 1000 : '',
         (it.flags || []).join('; '),
@@ -117,14 +123,22 @@
     var review = { generated: new Date().toISOString(), items: manifestItems.map(function (it) {
       return { name: it.name, ok: it.ok, confidence: it.conf,
                source: it.source, corners: it.corners || null,
-               flags: it.flags || [], status: it.status };
+               flags: it.flags || [], status: it.excluded ? 'excluded' : it.status };
     }) };
     entries.push({ name: 'review.json', data: new TextEncoder().encode(JSON.stringify(review, null, 1)) });
 
-    return Promise.all(entries.map(function (e) {
-      if (e.blob) return e.blob.arrayBuffer().then(function (b) { return { name: e.name, data: new Uint8Array(b) }; });
-      return Promise.resolve({ name: e.name, data: e.data });
-    })).then(function (ready) {
+    // One crop at a time: read it only to compute its CRC, then keep the
+    // Blob itself as the zip part (Promise.all + arrayBuffer() used to hold
+    // every crop in memory at once — ~3 GB for a 3000-photo batch).
+    var ready = [];
+    return entries.reduce(function (p, e) {
+      return p.then(function () {
+        if (!e.blob) { ready.push({ name: e.name, data: e.data }); return; }
+        return e.blob.arrayBuffer().then(function (b) {
+          ready.push({ name: e.name, data: e.blob, crc: crc32(new Uint8Array(b)), size: e.blob.size });
+        });
+      });
+    }, Promise.resolve()).then(function () {
       var blob = buildZip(ready);
       var url = URL.createObjectURL(blob);
       var a = document.createElement('a');

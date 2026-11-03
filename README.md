@@ -62,7 +62,10 @@ for everyday use.
 
 Three ways to get images in, in order of least setup:
 
-1. **Drag & drop** image files (or hundreds of them) onto the page.
+1. **Drag & drop** image files (or hundreds of them) onto the page — JPEG,
+   PNG, TIFF, or camera **RAW** (Canon CR2/CR3, Nikon NEF/NRW, Olympus ORF,
+   Sony ARW, DNG, Panasonic RW2, Fuji RAF, Pentax PEF, Samsung SRW; see
+   [RAW files](#raw-files)).
 2. **Paste a Drive link to a single photo** — shared as *“Anyone with the
    link”* it downloads anonymously, no sign-in, no configuration.
 3. **Bulk from Drive** — either
@@ -70,22 +73,42 @@ Three ways to get images in, in order of least setup:
      onto the page (zero setup; the zip is unpacked in the browser and any
      `.csv` files inside are picked up as metadata), or
    - do the one-time Google sign-in below and paste the folder link.
+     Subfolders (e.g. `locality/site/strata/`), Shared drives and Drive
+     shortcuts are followed. Photos are downloaded 4 at a time and processed
+     as they arrive, so large folders (thousands of photos) start right away.
+
+Photos are processed in parallel in Web Workers (one per spare CPU core, up
+to 8); the progress bar shows an estimate of the time left.
+
+**The suggested crop is always a square** inside the photo: the camera is
+rigidly mounted on the frame, so the opening is a square in the image. The
+detected corners are replaced by their best-fit square (least squares), and
+that square is shrunk by an **inset (default 5 %)** so the PVC rim stays out
+of the crop — change it in **⚙** (0–20 %). A photo is flagged for review when
+the detected outline was clearly not square (> 4 % → amber, > 12 % → red),
+when the square had to be moved/shrunk to stay inside the photo, or when its
+size differs from the typical size in the batch (outside 0.8–1.25×).
 
 Each thumbnail shows:
 
 - green ring — auto-accepted (confidence ≥ 0.80)
 - amber ring — usable but flagged, review suggested (0.55–0.80)
 - red ring — needs manual corners (< 0.55) or no frame found
+- blue ring — cropped by hand in the editor
+- grey — excluded from the export (✕ on the card; ↺ to include it again)
 
 Click a thumbnail: the review page opens on the **full uncropped photo** with
 the crop's four corner markers and a live crop preview alongside. Drag the
 markers onto the inner corners of the PVC opening, then Apply (or press
 `Enter`; `R` resets to the auto-detected corners, `Esc` closes). This works
 the same for confident crops and for detections that need a fix — nothing is
-changed unless you move a marker.
+changed unless you move a marker. **◀ ▶ (or ← →)** move to the previous /
+next photo without leaving the editor; markers you dragged are applied before
+moving on, so a whole batch can be reviewed in one pass.
 
 **⬇ Export ZIP** — there is nothing to tick: every crop with **confidence ≥ 0.80**
-is included automatically, plus every one you adjusted manually. Red/amber
+is included automatically, plus every one you adjusted manually, minus the
+ones you excluded with ✕. Red/amber
 thumbnails can be fixed in the editor to qualify. The
 `quadrat-crops-<timestamp>.zip` contains:
 
@@ -94,7 +117,18 @@ thumbnails can be fixed in the editor to qualify. The
   confidence, flags, date/site/group/code parsed from filenames, EXIF
   (make/model/date), Drive file id, and any columns joined from CSVs found in
   the Drive folder; images excluded from the zip keep an empty *file* column
+  (status `excluded` for the ones removed with ✕)
 - `review.json` — full per-image record incl. corner coordinates used
+
+### RAW files
+
+Browsers cannot decode RAW sensor data, so the app uses the **largest JPEG
+embedded by the camera** in the RAW file (full resolution in CR2, NEF, ARW and
+DNG from most cameras), keeps the RAW's EXIF (make, model, date) and applies
+its orientation. Some formats — notably Olympus/OM System **ORF** and older
+Canon CR2 — only embed a reduced preview; those photos are flagged ("reduced
+resolution"). If detail matters for annotation, export full-size JPEGs from
+the RAW files first (camera software, Lightroom, darktable…).
 
 ## Google Drive sign-in (only for auto-listing whole folders)
 
@@ -222,7 +256,9 @@ index.html          app shell
 Makefile            make preview (serve) / test / publish (deploy to Pages)
 css/styles.css      styling
 js/qd.js            detection core (browser + Node compatible)
-js/app.js           orchestration, queue, ingestion UI
+js/app.js           orchestration, worker-pool queue, square-crop checks, ingestion UI
+js/worker.js        per-photo pipeline in a Web Worker (decode → detect → square → warp → encode)
+js/raw.js           camera RAW support (largest embedded JPEG + RAW EXIF)
 js/grid.js          thumbnail grid + confidence ring highlighting
 js/editor.js        manual corner-marker editor + live crop preview
 js/drive.js         Google Identity Services (OAuth token), Picker, Drive v3 REST,
@@ -230,7 +266,7 @@ js/drive.js         Google Identity Services (OAuth token), Picker, Drive v3 RES
 js/unzip.js         in-browser ZIP reader (STORE + DEFLATE via DecompressionStream)
                     for the "download Drive folder as .zip" flow
 js/export.js        ZIP writer (STORE), manifest CSV, review.json
-js/exif.js          minimal JPEG EXIF reader
+js/exif.js          minimal EXIF reader (JPEG + TIFF-based RAW headers)
 js/metadata.js      filename parsing (date/site/group/code) + CSV join
 tests/run.js        regression suite (npm test; also run by CI)
 tests/images/       captured fixtures + expected.json
@@ -249,8 +285,8 @@ tools/qdbg.js       per-stage detector diagnostics for one or more images
 - Camera 42 cm above the substrate per the P2P protocol (horizontal or up
   to 40° inclination): the detector reports far-from-square openings as low
   confidence instead of forcing a wrong crop.
-- Images where the frame is partly outside the picture are handled (edge
-  support flag) but the crop will be missing that side.
+- Images where the frame is partly outside the picture are handled: the
+  suggested square is kept inside the photo and flagged for review.
 - Chile/northern-Hemisphere dark rock shots with heavy algae: the opening
   probe and confidence weighting flag them for review; manual markers are the
   intended fallback.
