@@ -44,3 +44,22 @@ every `crop` fixture; keep it that way when touching the pipeline.
   dirty checkout — the suite validates the working tree but the push ships the
   committed tree — so commit first; `make deploy-status` compares local and
   live versions.
+
+## Pipeline invariants (added in v1.6–v1.12, see `docs/CHANGES-1.5.3-to-1.12.0.md`)
+
+- **Two copies of the per-photo pipeline:** `js/worker.js` (`processPhoto`,
+  used by the worker pool) and `js/app.js` (`processOne` + `squareGeometry`,
+  the fallback when Worker/OffscreenCanvas is missing or a worker errors).
+  Change them together: square fit → inset → fit inside → warp side.
+- **Square geometry is app-level.** `det.quad` stays the raw detector output
+  (source pixels); the app stores `det.quadRaw`, `det.quadFull` and
+  `det.geom`. Do not move the square/inset logic into `detectQuadrat`.
+- **Color passes run mint → yellow → cyan → white.** `cyan` (TG-6/TG-7 mint
+  tube) and `white` (rod frames) only run when no earlier pass reached 0.8.
+  `white` is the pass most likely to grab bright sand; keep it last.
+- **Batch-relative checks** (typical square size) are re-applied when the
+  queue drains, so flags can change at the end of a batch.
+- **Drive originals are released after processing.** Code that needs the
+  original later (editor, re-export) must call `ensureBlob(it)`.
+- **Crops are warped at native resolution** (cap `NATIVE_MAX`) and resized to
+  a common side only at export (`QDExport.exportZip(..., { side })`).

@@ -9,7 +9,13 @@
 <header class="topbar">
   <h1>Quadrat Cropper <span id="verTag" class="ver"></span></h1>
   <div class="actions">
-    <button id="btnAddFiles" type="button">＋ Add images</button>
+    <details class="addmenu" id="addMenu">
+      <summary class="btnlike">＋ Add photos ▾</summary>
+      <div class="addmenu-list">
+        <button id="btnAddFolder" type="button">📁 A folder (with all its subfolders)…</button>
+        <button id="btnAddFiles" type="button">🖼 Individual photos or a .zip…</button>
+      </div>
+    </details>
     <button id="btnAddDrive" type="button">⊕ Add from Google Drive</button>
     <input type="text" id="folderLink" placeholder="Paste a Drive photo link (no sign-in) or folder link…"
            spellcheck="false" autocomplete="off">
@@ -28,22 +34,42 @@
     <span class="progress-text" id="progressText"></span>
   </div>
   <div class="stats" id="stats" hidden></div>
+  <nav class="tabs" role="tablist">
+    <button type="button" data-tab="photos" class="active" role="tab">Photos</button>
+    <button type="button" data-tab="meta" role="tab">Metadata</button>
+  </nav>
 </header>
 
 <main>
+ <div id="photosPanel">
   <div id="dropzone" class="dropzone">
-    <p><strong>Drop images — or a Drive-exported .zip — here</strong>, add them
-       with <em>Add images</em>, or paste a Drive link above.</p>
+    <p><strong>Drop photos, folders or a Drive-exported .zip here</strong> —
+       or click to choose a folder (all its subfolders are included; their names
+       fill the metadata) — or paste a Drive link above.</p>
     <p class="muted">Each photo is scanned for the PVC quadrat frame
        (mint-green or yellow); the square opening is auto-cropped.
        <span class="legend">
          <span class="chip green"></span> auto-accepted
          <span class="chip amber"></span> review suggested
          <span class="chip red"></span> needs manual corners
+         <span class="chip blue"></span> cropped by hand
        </span>
        <button id="btnDropHelp" type="button" class="linklike">how it works</button></p>
   </div>
   <section id="grid" class="grid"></section>
+ </div>
+ <section id="metaPanel" class="meta-panel" hidden>
+  <div class="meta-head">
+    <label>Project preset <select id="metaPreset"></select></label>
+    <label>File names in the ZIP
+      <select id="metaNameFormat">
+        <option value="source">as the source photo (AP126466.jpg)</option>
+        <option value="dateprefix">date + source (20260228_AP126466.jpg)</option>
+      </select>
+    </label>
+  </div>
+  <div id="metaBody"></div>
+ </section>
 </main>
 
 <!-- folder link without sign-in: offer the zero-setup paths -->
@@ -96,7 +122,11 @@
         the .zip trick or a one-time sign-in (⚙).</li>
     <li><b>Wait for the scan</b>: green ring = confident auto-crop
         (confidence ≥ 0.80), amber = review suggested (0.55–0.80),
-        red = needs manual corners (&lt; 0.55 or detection failed).</li>
+        red = needs manual corners (&lt; 0.55 or detection failed),
+        blue = you cropped it by hand in the editor. The suggested crop is
+        always a square inside the photo; if the detected outline was not
+        square, ran off the photo or is much smaller/larger than the rest of
+        the batch, it is flagged amber/red for review.</li>
     <li><b>Review</b>: click any thumbnail to open the full photo with the
         crop's corner markers and a live crop preview alongside. Drag the
         markers onto the inner corners of the frame, then
@@ -155,6 +185,23 @@
     </label>
     <p class="muted small">Stored only in this browser, sent only to Google.
        Scopes requested: <code>drive.readonly</code> (list + download the files you pick).</p>
+    <h2>Crop</h2>
+    <label>Shrink the suggested square by
+      <input type="number" id="insetInput" min="0" max="20" step="0.5" style="width:5em"> %
+    </label>
+    <p class="muted small">Keeps the yellow/green PVC rim out of the crop. Applies to
+       photos processed after saving (default 5 %).</p>
+    <label>Crop size in the ZIP
+      <select id="cropSizeMode">
+        <option value="median">Same for all photos — median of the batch (recommended)</option>
+        <option value="fixed">Same for all photos — fixed size</option>
+        <option value="native">Each crop at its own size</option>
+      </select>
+      <input type="number" id="cropSizePx" min="200" max="4000" step="10" style="width:6em"> px
+    </label>
+    <p class="muted small">Every crop shows the same 25 × 25 cm, so a common size in px
+       means a common scale (px per cm) — crops become directly comparable.
+       The px box is used with "fixed size".</p>
     <div class="dialog-actions">
       <button value="cancel" formnovalidate>Cancel</button>
       <button id="btnSaveSettings" value="confirm" class="primary">Save</button>
@@ -175,14 +222,22 @@
       <div class="editor-help">
         <p>Drag the four corner markers onto the <em>inner</em> corners of the
            PVC opening. The crop area updates live.</p>
+        <label class="small"><input type="checkbox" id="editorLockSquare" checked>
+          Keep square — a corner resizes/rotates the square around the opposite
+          corner; drag inside the square to move it</label>
         <p class="muted">Keys: <kbd>R</kbd> reset to auto-detected,
-           <kbd>Enter</kbd> apply &amp; re-crop, <kbd>Esc</kbd> close.</p>
+           <kbd>Enter</kbd> apply &amp; re-crop, <kbd>Esc</kbd> close,
+           <kbd>←</kbd> / <kbd>→</kbd> previous / next photo (moved markers
+           are applied before moving on).</p>
       </div>
       <div class="preview-wrap" id="cropPreviewWrap">
         <h3>Crop preview</h3>
         <canvas id="cropPreview" width="300" height="300"></canvas>
       </div>
       <div class="dialog-actions">
+        <button id="btnEditorPrev" type="button" title="Previous photo (←)" aria-label="Previous photo">◀</button>
+        <span id="editorPos" class="muted small"></span>
+        <button id="btnEditorNext" type="button" title="Next photo (→)" aria-label="Next photo">▶</button>
         <button id="btnEditorReset" type="button">Reset</button>
         <button id="btnEditorClose" type="button" class="secondary">Close</button>
         <button id="btnEditorApply" type="button" class="primary">Apply &amp; re-crop</button>
@@ -191,7 +246,8 @@
   </div>
 </dialog>
 
-<input type="file" id="fileInput" accept="image/jpeg,image/*,.zip" multiple hidden>
+<input type="file" id="folderInput" webkitdirectory multiple hidden>
+<input type="file" id="fileInput" accept="image/jpeg,image/*,.zip,.cr2,.cr3,.nef,.nrw,.orf,.arw,.dng,.rw2,.raf,.pef,.srw" multiple hidden>
 
 <footer class="foot muted small">
   <div class="foot-line">
@@ -217,11 +273,14 @@
 
 <script src="js/qd.js"></script>
 <script src="js/exif.js"></script>
+<script src="js/raw.js"></script>
 <script src="js/metadata.js"></script>
 <script src="js/drive.js"></script>
 <script src="js/unzip.js"></script>
 <script src="js/grid.js"></script>
 <script src="js/editor.js"></script>
+<script src="js/exifwrite.js"></script>
+<script src="js/metatab.js"></script>
 <script src="js/export.js"></script>
 <script src="js/app.js"></script>
 </body>

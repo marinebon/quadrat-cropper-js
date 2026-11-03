@@ -1,7 +1,9 @@
 # Quadrat Cropper (JS)
 
 Browser-based tool that automatically crops photoquadrat images to the square
-interior area framed by the PVC quadrat (mint-green or yellow, 25 × 25 cm). Supports
+interior area framed by the PVC quadrat (mint-green or yellow, 25 × 25 cm;
+the mint tube is also found when the camera renders it turquoise/cyan, as the
+Olympus/OM TG-6/TG-7 does). Supports
 individual files, drag & drop batches, and Google Drive (Picker or a pasted
 folder link). Low-confidence detections are flagged for manual review with
 draggable corner markers, and everything exports as a ZIP of square crops plus
@@ -62,7 +64,14 @@ for everyday use.
 
 Three ways to get images in, in order of least setup:
 
-1. **Drag & drop** image files (or hundreds of them) onto the page.
+**＋ Add photos ▾ → A folder** picks a whole folder **including all its
+subfolders** (their names fill the metadata; CSVs inside are joined as
+metadata too). Clicking the drop area does the same.
+
+1. **Drag & drop** image files or folders (or hundreds of them) onto the page — JPEG,
+   PNG, TIFF, or camera **RAW** (Canon CR2/CR3, Nikon NEF/NRW, Olympus ORF,
+   Sony ARW, DNG, Panasonic RW2, Fuji RAF, Pentax PEF, Samsung SRW; see
+   [RAW files](#raw-files)).
 2. **Paste a Drive link to a single photo** — shared as *“Anyone with the
    link”* it downloads anonymously, no sign-in, no configuration.
 3. **Bulk from Drive** — either
@@ -70,31 +79,111 @@ Three ways to get images in, in order of least setup:
      onto the page (zero setup; the zip is unpacked in the browser and any
      `.csv` files inside are picked up as metadata), or
    - do the one-time Google sign-in below and paste the folder link.
+     Subfolders (e.g. `locality/site/strata/`), Shared drives and Drive
+     shortcuts are followed. Photos are downloaded 4 at a time and processed
+     as they arrive, so large folders (thousands of photos) start right away.
+
+Photos are processed in parallel in Web Workers (one per spare CPU core, up
+to 8); the progress bar shows an estimate of the time left.
+
+**The suggested crop is always a square** inside the photo: the camera is
+rigidly mounted on the frame, so the opening is a square in the image. The
+detected corners are replaced by their best-fit square (least squares), and
+that square is shrunk by an **inset (default 5 %)** so the PVC rim stays out
+of the crop — change it in **⚙** (0–20 %). A photo is flagged for review when
+the detected outline was clearly not square (> 6 % → amber, > 12 % → red),
+when the square had to be moved/shrunk to stay inside the photo, or when its
+size differs from the typical size in the batch (outside 0.8–1.25×).
 
 Each thumbnail shows:
 
 - green ring — auto-accepted (confidence ≥ 0.80)
 - amber ring — usable but flagged, review suggested (0.55–0.80)
 - red ring — needs manual corners (< 0.55) or no frame found
+- blue ring — cropped by hand in the editor
+- grey — excluded from the export (✕ on the card; ↺ to include it again)
 
 Click a thumbnail: the review page opens on the **full uncropped photo** with
 the crop's four corner markers and a live crop preview alongside. Drag the
 markers onto the inner corners of the PVC opening, then Apply (or press
 `Enter`; `R` resets to the auto-detected corners, `Esc` closes). This works
 the same for confident crops and for detections that need a fix — nothing is
-changed unless you move a marker.
+changed unless you move a marker. With **Keep square** (on by default)
+the crop stays a true square: dragging a corner resizes/rotates it around the
+opposite corner, dragging inside it moves it, and it can never leave the
+photo; untick it for free corners. **◀ ▶ (or ← →)** move to the previous /
+next photo without leaving the editor; markers you dragged are applied before
+moving on, so a whole batch can be reviewed in one pass.
 
 **⬇ Export ZIP** — there is nothing to tick: every crop with **confidence ≥ 0.80**
-is included automatically, plus every one you adjusted manually. Red/amber
+is included automatically, plus every one you adjusted manually, minus the
+ones you excluded with ✕. Red/amber
 thumbnails can be fixed in the editor to qualify. The
 `quadrat-crops-<timestamp>.zip` contains:
 
-- `<name>_crop.jpg` square crops (cap 1600 px square)
+- square crops, **all the same size in px** by default (the median crop
+  size of the batch; a fixed size or each crop's own size can be chosen in
+  **⚙**). Every crop shows the same 25 × 25 cm, so one size = one scale
+  (px per cm) for the whole batch. Crops are warped at the opening's own
+  resolution (no 1600-px cap any more)
 - `manifest.csv` — every image that was loaded, with filename, status,
   confidence, flags, date/site/group/code parsed from filenames, EXIF
   (make/model/date), Drive file id, and any columns joined from CSVs found in
   the Drive folder; images excluded from the zip keep an empty *file* column
+  (status `excluded` for the ones removed with ✕)
 - `review.json` — full per-image record incl. corner coordinates used
+
+### Metadata tab (CoralNet CSV + EXIF)
+
+Photos are grouped by their **source folder** — Drive subfolders, folders
+inside a zip, or a folder added with **＋ Add folder** / dropped from Finder
+(e.g. a Google Drive for desktop folder). The **Metadata** tab shows one row
+per group; fill the fields once per group (⇣ copies the first row down a
+column). With the **Intertidal — MBON Pole to Pole (CoralNet)** preset:
+
+- read from each photo: `Name`, `Date`, `Latitude`, `Longitude`, `Camera`
+  (EXIF date, GPS and model);
+- the same for every photo: `Height (cm)` = 42, `Strobes` = no,
+  `Framing gear used` = 25x25cm;
+- per group: `country`, `state`, `locality`, `site`, `strata`
+  (HIGHTIDE / MIDTIDE / LOWTIDE), `Photographer`, `Comments` (e.g. AMP code),
+  `Depth`, `Water quality`, `White balance card`, plus `season` (FRIO /
+  CALIDO; kept in EXIF and the manifest, not a CoralNet column).
+
+Folder names pre-fill the group. The field team's Drive layout is
+`COUNTRY/YEAR/SEASON/LOCALITY/SITE/STRATA/photo`, e.g.
+`ARGENTINA/2026/FRIO/CABO DOS BAHIAS/ENTRE CALETAS/ALTO/AMP55261.JPG`; it is
+read from the deepest folder up, so links to a lower folder work too. Strata
+names ALTO/MEDIO/BAJO (or HIGH/MID/LOW…) become HIGHTIDE/MIDTIDE/LOWTIDE.
+`state` and `Comments` (AMP code) come from a table of the localities already
+monitored (seeded from the 2026 campaign), and the app learns new localities
+— including the photographer — as you type them.
+
+**Azores workshop (CoralNet)** preset — the MBON + AIR Centre workshop
+layout: the five Aux fields are `Group, country, locality, site, strata`
+(no `state`); defaults PORTUGAL / ILHA TERCEIRA, `Comments` = *Azores Workshop
+2026*, `Photographer` = the group when left empty, no framing gear; a folder
+per group or transect (*Group_1*, *Grupo 2*, *Transect_3*…) fills `Group`.
+
+The ZIP then names each crop `YYYYMMDD_` + the source photo name (the
+date from EXIF; names that already start with a date are left alone — or
+choose *as the source photo*), adds **`metadata_coralnet.csv`** in CoralNet's upload
+format (columns `Name, Date, country, state, locality, site, strata,
+Height (cm), Latitude, Longitude, Depth, Camera, Photographer, Water quality,
+Strobes, Framing gear used, White balance card, Comments`) and embeds the same
+information in every crop's **EXIF** (date, GPS, make/model, photographer as
+Artist, the group fields in ImageDescription/UserComment). Export warns when
+a required field is empty. Choose *None* as preset to skip all of this.
+
+### RAW files
+
+Browsers cannot decode RAW sensor data, so the app uses the **largest JPEG
+embedded by the camera** in the RAW file (full resolution in CR2, NEF, ARW and
+DNG from most cameras), keeps the RAW's EXIF (make, model, date) and applies
+its orientation. Some formats — notably Olympus/OM System **ORF** and older
+Canon CR2 — only embed a reduced preview; those photos are flagged ("reduced
+resolution"). If detail matters for annotation, export full-size JPEGs from
+the RAW files first (camera software, Lightroom, darktable…).
 
 ## Google Drive sign-in (only for auto-listing whole folders)
 
@@ -222,7 +311,11 @@ index.html          app shell
 Makefile            make preview (serve) / test / publish (deploy to Pages)
 css/styles.css      styling
 js/qd.js            detection core (browser + Node compatible)
-js/app.js           orchestration, queue, ingestion UI
+js/app.js           orchestration, worker-pool queue, square-crop checks, ingestion UI
+js/worker.js        per-photo pipeline in a Web Worker (decode → detect → square → warp → encode)
+js/raw.js           camera RAW support (largest embedded JPEG + RAW EXIF)
+js/metatab.js       Metadata tab: presets, per-folder groups, CoralNet CSV rows
+js/exifwrite.js     writes EXIF (date, GPS, camera, fields) into the exported crops
 js/grid.js          thumbnail grid + confidence ring highlighting
 js/editor.js        manual corner-marker editor + live crop preview
 js/drive.js         Google Identity Services (OAuth token), Picker, Drive v3 REST,
@@ -230,13 +323,19 @@ js/drive.js         Google Identity Services (OAuth token), Picker, Drive v3 RES
 js/unzip.js         in-browser ZIP reader (STORE + DEFLATE via DecompressionStream)
                     for the "download Drive folder as .zip" flow
 js/export.js        ZIP writer (STORE), manifest CSV, review.json
-js/exif.js          minimal JPEG EXIF reader
+js/exif.js          minimal EXIF reader incl. GPS (JPEG + TIFF-based RAW headers)
 js/metadata.js      filename parsing (date/site/group/code) + CSV join
 tests/run.js        regression suite (npm test; also run by CI)
 tests/images/       captured fixtures + expected.json
 tools/test.js       visual debug harness — overlays, crops, summary.json
 tools/qdbg.js       per-stage detector diagnostics for one or more images
 ```
+
+## Change history
+
+The field-review changes from v1.5.3 to v1.12.0 (why, what, where, how
+tested) are explained in
+[`docs/CHANGES-1.5.3-to-1.12.0.md`](docs/CHANGES-1.5.3-to-1.12.0.md).
 
 ## Notes & limitations
 
@@ -249,10 +348,10 @@ tools/qdbg.js       per-stage detector diagnostics for one or more images
 - Camera 42 cm above the substrate per the P2P protocol (horizontal or up
   to 40° inclination): the detector reports far-from-square openings as low
   confidence instead of forcing a wrong crop.
-- Images where the frame is partly outside the picture are handled (edge
-  support flag) but the crop will be missing that side.
+- Images where the frame is partly outside the picture are handled: the
+  suggested square is kept inside the photo and flagged for review.
 - Chile/northern-Hemisphere dark rock shots with heavy algae: the opening
   probe and confidence weighting flag them for review; manual markers are the
   intended fallback.
-- Export crops are capped at 1600 px square, matching the light gray `s190`
-  preview convention of the reference outputs.
+- Crops are warped at the opening's native resolution and brought to one
+  common size at export (median of the batch by default).
