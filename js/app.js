@@ -44,7 +44,7 @@
     ui.verTag.textContent = 'v' + VER;
     ui.footVer.textContent = 'v' + VER;
 
-    ui.addFiles.addEventListener('click', function () { ui.fileInput.click(); });
+    ui.addFiles.addEventListener('click', function () { closeAddMenu(); ui.fileInput.click(); });
     ui.fileInput.addEventListener('change', function () {
       addFiles(ui.fileInput.files);
       ui.fileInput.value = '';
@@ -98,11 +98,26 @@
       ui.drop.addEventListener(evn, function (e) { e.preventDefault(); ui.drop.classList.remove('drag'); });
     });
     ui.drop.addEventListener('drop', function (e) {
-      addFiles(e.dataTransfer.files);
+      filesFromDrop(e.dataTransfer).then(addFiles);
     });
-    ui.drop.addEventListener('click', function () { ui.fileInput.click(); });
+    var folderInput = el('folderInput');
+    if (folderInput) {
+      el('btnAddFolder').addEventListener('click', function () { closeAddMenu(); folderInput.click(); });
+      folderInput.addEventListener('change', function () { addFiles(folderInput.files); folderInput.value = ''; });
+    }
+    // Photos | Metadata tabs
+    QDMetaTab.init({ getItems: function () { return state.items; }, onChange: function () {} });
+    Array.prototype.forEach.call(document.querySelectorAll('.tabs [data-tab]'), function (b) {
+      b.addEventListener('click', function () { showTab(b.getAttribute('data-tab')); });
+    });
+    // the usual case is a whole field folder (country/…/site/strata)
+    ui.drop.addEventListener('click', function () { (el('folderInput') || ui.fileInput).click(); });
+    document.addEventListener('click', function (e) {
+      var m = el('addMenu');
+      if (m && m.open && !m.contains(e.target)) m.open = false;
+    });
 
-    QDGrid.init({ onThumb: onThumbClick });
+    QDGrid.init({ onThumb: onThumbClick, onExclude: toggleExclude });
     QDEditor.init();
     render();
 
@@ -114,16 +129,74 @@
 
   // ---------------------------------------------------------------- ingest
 
+  var loadCount = 0;
+  /** Folder part of a relative path ("A/B/C/x.jpg" → "A/B/C"), or null. */
+  function dirOf(path) {
+    var i = String(path || '').lastIndexOf('/');
+    return i > 0 ? path.slice(0, i) : null;
+  }
+
+  /**
+   * Walk dropped folders (Finder/Explorer, e.g. a Google Drive for desktop
+   * folder): files keep their relative path, so the folder structure becomes
+   * metadata groups exactly as with a Drive link or a zip.
+   */
+  function filesFromDrop(dt) {
+    var items = dt.items ? Array.from(dt.items) : [];
+    var entries = items.map(function (i) { return i.webkitGetAsEntry && i.webkitGetAsEntry(); }).filter(Boolean);
+    if (!entries.some(function (en) { return en.isDirectory; })) return Promise.resolve(Array.from(dt.files));
+    var out = [];
+    function walk(entry, prefix) {
+      if (entry.isFile) {
+        return new Promise(function (res) {
+          entry.file(function (f) { f._relPath = prefix + f.name; out.push(f); res(); }, function () { res(); });
+        });
+      }
+      return new Promise(function (res) {
+        var reader = entry.createReader(), all = [];
+        (function more() {
+          reader.readEntries(function (batch) {
+            if (!batch.length) {
+              all.reduce(function (p, ch) { return p.then(function () { return walk(ch, prefix + entry.name + '/'); }); }, Promise.resolve()).then(res);
+              return;
+            }
+            all = all.concat(batch); more();
+          }, function () { res(); });
+        })();
+      });
+    }
+    return entries.reduce(function (p, en) { return p.then(function () { return walk(en, ''); }); }, Promise.resolve())
+      .then(function () { return out; });
+  }
+
+  function closeAddMenu() { var m = el('addMenu'); if (m) m.open = false; }
+
   function addFiles(fileList) {
     var files = Array.from(fileList);
+    var load = 'Load ' + (++loadCount);
+    // CSVs inside a picked/dropped folder are metadata (same as in a zip or a
+    // Drive folder): read them before the photos are queued so they join
+    var csvFiles = files.filter(function (f) { return /\.csv$/i.test(f.name); });
+    if (csvFiles.length) {
+      Promise.all(csvFiles.map(function (f) {
+        return f.text().then(function (t) { var p = QDMeta.parseCSV(t); p.name = f.name; return p; }, function () { return null; });
+      })).then(function (cs) {
+        state.csvs = state.csvs.concat(cs.filter(Boolean));
+        addFiles(files.filter(function (f) { return !/\.csv$/i.test(f.name); }));
+      });
+      return;
+    }
     var zips = files.filter(function (f) { return /\.zip$/i.test(f.name); });
     var imgs = files.filter(function (f) {
-      return !/\.zip$/i.test(f.name) && (/image|jpe?g/i.test(f.type) || /\.(jpe?g|png|tiff?)$/i.test(f.name));
+      return !/\.zip$/i.test(f.name) && (/image|jpe?g/i.test(f.type) || /\.(jpe?g|png|tiff?)$/i.test(f.name) || QDRaw.isRaw(f.name));
     });
     if (zips.length) { zips.forEach(addZip); }
     if (!imgs.length) return;
     imgs.forEach(function (f) {
-      state.items.push(newItem(f.name, f, null));
+      var it = newItem(f.name, f, null);
+      // folder of a dropped / picked folder, else this load as one group
+      it.group = dirOf(f._relPath || f.webkitRelativePath) || load;
+      state.items.push(it);
     });
     render();
     startQueue();
@@ -135,8 +208,7 @@
     QDUnzip.read(file).then(function (entries) {
       var csvEntries = entries.filter(function (e) { return /\.csv$/i.test(e.name) && !/^__MACOSX/.test(e.path); });
       var imgEntries = entries.filter(function (e) {
-        return /^(image|application\/octet-stream)/.test(e.blob.type || '') &&
-               /\.(jpe?g|png|tiff?)$/i.test(e.path) && !/^__MACOSX/.test(e.path);
+        return (/\.(jpe?g|png|tiff?)$/i.test(e.path) || QDRaw.isRaw(e.path)) && !/^__MACOSX/.test(e.path);
       });
       if (!imgEntries.length && !csvEntries.length) {
         setProgress(false);
@@ -150,7 +222,9 @@
       })).then(function (csvData) {
         state.csvs = csvData.filter(Boolean);
         imgEntries.forEach(function (e) {
-          state.items.push(newItem(e.name, e.blob, 'zip:' + e.path));
+          var zi = newItem(e.name, e.blob, 'zip:' + e.path);
+          zi.group = dirOf(e.path) || file.name.replace(/\.zip$/i, '');
+          state.items.push(zi);
         });
         setProgress(false);
         render();
@@ -172,7 +246,9 @@
         setProgress(true, 'Downloading ' + pick.name + '…');
         return QDDrive.downloadFile(pick.id).then(function (blob) {
           setProgress(false);
-          state.items.push(newItem(pick.name, blob, pick.id));
+          var it = newItem(pick.name, blob, pick.id);
+          it.origin = 'drive-api';
+          state.items.push(it);
           render(); startQueue();
         });
       }
@@ -231,14 +307,29 @@
   function ingestFolderById(folderId) {
     setProgress(true, 'Listing Drive folder…');
     return QDDrive.ingestFolder(folderId, function (msg) {
-      setProgress(true, msg);
-    }).then(function (res) {      state.csvs = (res.csvs || []).filter(Boolean);
-      res.items.forEach(function (it) {
-        state.items.push(newItem(it.name, it.blob, it.driveId));
-      });
-      setProgress(false);
-      render();
-      startQueue();
+      state.dlMsg = msg;
+      if (!state.busy) setProgress(true, msg);
+    }, {
+      onCsvs: function (csvs) { state.csvs = (csvs || []).filter(Boolean); },
+      // stream: each photo joins the queue as soon as it is downloaded
+      onItem: function (f) {
+        var it = newItem(f.name, f.blob, f.driveId);
+        // Drive subfolder path below the pasted/picked folder
+        it.group = dirOf(f.path) || 'Drive folder';
+        it.origin = 'drive-api';
+        state.items.push(it);
+        ui.grid.appendChild(QDGrid.render(it));
+        startQueue();
+        return waitForRoom();
+      }
+    }).then(function (res) {
+      state.dlMsg = '';
+      if (!state.busy) setProgress(false);
+      renderStats();
+      if (res.failed && res.failed.length) {
+        alert(res.failed.length + ' file(s) could not be downloaded from Drive and were skipped:\n\n'
+          + res.failed.slice(0, 15).join('\n') + (res.failed.length > 15 ? '\n…' : ''));
+      }
     }).catch(function (e) {
       setProgress(false);
       alert(String(e.message || e));
@@ -264,27 +355,171 @@
     if (frac != null) ui.progressFill.style.width = Math.round(frac * 100) + '%';
   }
 
+  // ------------------------------------------------------- worker pool
+  //
+  // Each worker runs the full per-photo pipeline (decode → detect → square →
+  // warp → encode, see worker.js), one photo at a time, on its own CPU core.
+  // Falls back to the main-thread processOne() when workers/OffscreenCanvas
+  // are unavailable (old Safari, file:// pages) or a worker errors out.
+  var pool = null;
+  function getPool() {
+    if (pool) return pool;
+    pool = [];
+    if (typeof Worker === 'undefined' || typeof OffscreenCanvas === 'undefined') return pool;
+    var n = Math.max(1, Math.min(8, (navigator.hardwareConcurrency || 4) - 1));
+    try {
+      for (var i = 0; i < n; i++) pool.push({ w: new Worker('js/worker.js'), busy: false, broken: false });
+    } catch (e) { pool = []; }
+    return pool;
+  }
+
+  function runInWorker(slot, msg) {
+    return new Promise(function (resolve, reject) {
+      slot.w.onmessage = function (e) { resolve(e.data); };
+      slot.w.onerror = function (e) { slot.broken = true; e.preventDefault && e.preventDefault(); reject(new Error(e.message || 'worker error')); };
+      slot.w.postMessage(msg);
+    });
+  }
+
+  async function processInWorker(it, slot) {
+    if (!it.meta) it.meta = QDMeta.joinMeta(it.name, state.csvs);
+    if (!it.exif) it.exif = await QDExif.fromBlob(it.blob);
+    var r = await runInWorker(slot, { id: it.id, blob: it.blob, maxSide: 1600, maxMP: MAX_DETECT_MP, inset: getInset() });
+    if (r.error) throw new Error(r.error);
+    var det = r.det;
+    it.det = det;
+    it.ok = !!r.ok;
+    it.conf = det.confidence || 0;
+    it.flags = det.flags || [];
+    it.reason = det.diagnostics && det.diagnostics.reason || null;
+    if (r.ok) {
+      det.geom = r.geom;
+      it.sidePx = r.geom.side;
+      it.imgShort = Math.min(r.natW, r.natH);
+      applyChecks(it);
+      it.corners = det.quadFull.map(function (c) { return { x: c.x, y: c.y }; });
+      it.source = 'auto';
+      it.cropBlob = r.cropBlob;
+      it.status = 'done';
+    } else {
+      it.status = 'failed';
+      it.thumbIsSource = true;
+    }
+    if (it.thumbURL && /^blob:/.test(it.thumbURL)) URL.revokeObjectURL(it.thumbURL);
+    it.thumbURL = URL.createObjectURL(r.thumbBlob);
+  }
+
+  /**
+   * Originals pulled through the Drive API are dropped once processed (a
+   * 3000-photo folder is ~25 GB) and fetched again only if the photo is
+   * opened in the editor. Local files are disk-backed File objects: kept.
+   */
+  function releaseOriginal(it) {
+    if (it.origin === 'drive-api' && it.driveId) it.blob = null;
+  }
+  function ensureBlob(it) {
+    if (it.blob) return Promise.resolve(it.blob);
+    if (it.origin !== 'drive-api' || !it.driveId) return Promise.reject(new Error('original photo is no longer available'));
+    setProgress(true, 'Downloading original of ' + it.name + '…', null);
+    return QDDrive.downloadFile(it.driveId).then(function (b) {
+      // a released RAW comes back as RAW: extract its JPEG again for the editor
+      return QDRaw.isRaw(it.name) ? QDRaw.toJpeg(b).then(function (r) { return r.blob; }) : b;
+    }).then(function (b) {
+      setProgress(false); it.blob = b; return b;
+    }, function (e) { setProgress(false); throw e; });
+  }
+
+  /** Resolves when few enough photos wait in memory (download backpressure). */
+  function waitForRoom() {
+    var limit = Math.max(6, getPool().length * 3);
+    return new Promise(function (resolve) {
+      (function check() {
+        var waiting = 0;
+        for (var i = 0; i < state.items.length; i++) {
+          var st = state.items[i].status;
+          if (st === 'queued' || st === 'processing') waiting++;
+        }
+        if (waiting < limit) resolve(); else setTimeout(check, 250);
+      })();
+    });
+  }
+
+  /**
+   * RAW files (CR2, NEF, ORF…): swap in the largest embedded camera JPEG
+   * once, keeping the RAW's EXIF; flag it when that JPEG is only a reduced
+   * preview (common in Olympus ORF).
+   */
+  async function prepare(it) {
+    if (!QDRaw.isRaw(it.name) || it.rawDone) return;
+    if (!it.blob) await ensureBlob(it);
+    var r = await QDRaw.toJpeg(it.blob);
+    it.blob = r.blob;
+    it.exif = r.exif;
+    it.rawDone = true;
+    it.rawNote = 'RAW: using the embedded camera JPEG (' + r.width + '×' + r.height + ')'
+      + (r.small ? ' — reduced resolution; export full-size JPEGs from the RAW if detail matters' : '');
+  }
+
   async function startQueue() {
     if (state.busy) return;
     state.busy = true;
-    var queue = state.items.filter(function (it) { return it.status === 'queued'; });
-    var done = 0;
-    for (var i = 0; i < queue.length; i++) {
-      var it = queue[i];
-      it.status = 'processing';
-      QDGrid.updateCard(it);
-      setProgress(true, 'Processing ' + (i + 1) + '/' + queue.length + ' — ' + it.name, i / queue.length);
-      try {
-        await processOne(it);
-      } catch (e) {
-        it.status = 'failed';
-        it.reason = String(e.message || e);
-        console.error('failed', it.name, e);
+    var workers = getPool();
+    var done = 0, active = 0, t0 = Date.now();
+    await new Promise(function (resolve) {
+      function pump() {
+        // re-scan every time: items added mid-run (drops, Drive streaming)
+        // are picked up; clearAll() empties the list and ends the run
+        var pending = state.items.filter(function (q) { return q.status === 'queued'; });
+        if (!pending.length && active === 0) { resolve(); return; }
+        var free = workers.length
+          ? workers.filter(function (w) { return !w.busy && !w.broken; })
+          : (active === 0 ? [null] : []);
+        if (workers.length && !free.length && active === 0) free = [null]; // all broken
+        for (var k = 0; k < free.length && k < pending.length; k++) launch(pending[k], free[k]);
+        var left = state.items.filter(function (q) { return q.status === 'queued'; }).length;
+        var total = done + active + left;
+        var rate = done ? (Date.now() - t0) / done : 0;
+        setProgress(true, 'Processing ' + done + '/' + total + ' (' + (workers.length || 1) + ' in parallel)'
+          + (rate && left ? ' — ~' + Math.ceil(rate * (left + active) / 60000) + ' min left' : '')
+          + (state.dlMsg ? ' · Drive: ' + state.dlMsg : ''),
+          total ? done / total : 0);
       }
-      done++;
-      QDGrid.updateCard(it);
-      renderStats();
-    }
+      function launch(it, slot) {
+        it.status = 'processing';
+        QDGrid.updateCard(it);
+        active++;
+        if (slot) slot.busy = true;
+        var job = prepare(it).then(function () {
+          return slot ? processInWorker(it, slot).catch(function (e) {
+              console.warn('worker failed, retrying on main thread', it.name, e);
+              return processOne(it);
+            })
+          : processOne(it);
+        });
+        job.catch(function (e) {
+          it.status = 'failed';
+          it.reason = String(e.message || e);
+          console.error('failed', it.name, e);
+        }).then(function () {
+          if (it.rawNote && it.flags.indexOf(it.rawNote) < 0) it.flags = it.flags.concat([it.rawNote]);
+          releaseOriginal(it);
+          if (slot) slot.busy = false;
+          active--; done++;
+          QDGrid.updateCard(it);
+          renderStats();
+          pump();
+        });
+      }
+      pump();
+    });
+    // The batch-typical size is only known once enough photos are in, so the
+    // first ones were checked without it: re-check every auto crop now
+    // (flags/confidence only — the crop itself does not change).
+    var frac = typicalSideFrac(null);
+    state.items.forEach(function (o) {
+      if (o.source === 'auto' && o.det && o.det.geom) { applyChecks(o, frac); QDGrid.updateCard(o); }
+    });
+    renderStats();
     setProgress(false);
     state.busy = false;
     ui.exportBtn.disabled = false;
@@ -295,7 +530,6 @@
   // so the browser path and the Node/test path see identical detector
   // input (previously drawImage resampled to 1152 here with unknown
   // interpolation, diverging from the fixtures on borderline images).
-  var MAX_DETECT_MP = 24;   // safety cap for absurd sources (~96MB RGBA)
   async function decodeScaled(it) {
     var bmp = await createImageBitmap(it.blob, { imageOrientation: 'from-image' });
     var natW = bmp.width, natH = bmp.height;
@@ -328,13 +562,22 @@
       // map detection-space quad to ORIGINAL image px once — everything
       // downstream (crop, manual editor, manifest) speaks original px.
       var fac = dec.natW / id.width;
-      var quadFull = det.quad.map(function (c) {
+      var quadRaw = det.quad.map(function (c) {
         return { x: c.x * fac, y: c.y * fac };
       });
-      det.quadFull = quadFull;
+      // The recommended crop is ALWAYS a square (rigid camera mount → the
+      // opening is square in the image) and always inside the photo, so the
+      // editor never shows an unreachable marker. See squareGeometry().
+      var g = squareGeometry(quadRaw, dec.natW, dec.natH);
+      det.quadRaw = quadRaw;
+      det.quadFull = g.quad;
+      det.geom = g;
+      it.sidePx = g.side;
+      it.imgShort = Math.min(dec.natW, dec.natH);
+      applyChecks(it);
       it.source = 'auto';
       it.status = 'done';
-      await makeCrop(it, quadFull, 'auto');
+      await makeCrop(it, g.quad, 'auto');
     } else {
       it.status = 'failed';
       // show the source photo as the card thumbnail so failures can be
@@ -344,6 +587,80 @@
     }
     // keep full-resolution source for manual review of failures only
     it.keptForReview = !it.ok;
+  }
+
+  // ------------------------------------------------- square-crop geometry
+
+  // Tolerances for the recommended crop (fractions of the square's side).
+  var SQUARE_TOL_REVIEW = 0.04;   // > 4 % corner shift → "suggested review"
+  var SQUARE_TOL_MANUAL = 0.12;   // > 12 % → "needs manual corners"
+  var SIZE_TOL = [0.8, 1.25];     // side vs batch-typical side
+  var SIZE_MIN_SAMPLES = 5;       // clean detections needed to know "typical"
+  var CAP_REVIEW = 0.79, CAP_MANUAL = 0.54;
+
+  /** Detector quad → best-fit square, kept inside the image. */
+  // Inset of the suggested crop (% of the side): the detected square sits on
+  // the inner rim of the tube, so a few % less keeps the yellow/green PVC
+  // out of the crop. Set in ⚙; default 5 %.
+  function getInset() {
+    var v = 5;
+    try { var s = localStorage.getItem('quadrat.inset'); if (s !== null && s !== '') v = +s; } catch (e) { /* private mode */ }
+    return isFinite(v) ? Math.max(0, Math.min(20, v)) : 5;
+  }
+
+  function squareGeometry(quadRaw, W, H) {
+    var sq = QD.fitSquare(quadRaw);
+    var inset = getInset();
+    var sqq = inset ? QD.scaleQuad(sq.quad, 1 - inset / 100) : sq.quad;
+    var ins = QD.fitInside(sqq, W, H);
+    var q = ins.quad;
+    var side = Math.hypot(q[1].x - q[0].x, q[1].y - q[0].y);
+    return { quad: q, side: side, residual: sq.residual, moved: ins.moved, shrunk: ins.shrunk, inset: inset };
+  }
+
+  /**
+   * Typical square side for this batch, as a fraction of the photo's short
+   * side (robust to mixed cameras/resolutions): median over clean, confident
+   * auto detections, excluding `self`. null until there are enough samples.
+   */
+  function typicalSideFrac(self) {
+    var fr = state.items.filter(function (o) {
+      return o !== self && o.source === 'auto' && o.det && o.det.geom &&
+        (o.det.confidence || 0) >= 0.8 && o.det.geom.residual <= SQUARE_TOL_REVIEW &&
+        !o.det.geom.moved && !o.det.geom.shrunk && o.imgShort;
+    }).map(function (o) { return o.sidePx / o.imgShort; }).sort(function (a, b) { return a - b; });
+    if (fr.length < SIZE_MIN_SAMPLES) return null;
+    return fr[Math.floor(fr.length / 2)];
+  }
+
+  /** Recompute flags + capped confidence of an auto crop from its geometry. */
+  function applyChecks(it, fracOverride) {
+    var det = it.det, g = det && det.geom;
+    if (!g) return;
+    var flags = (det.flags || []).slice(), cap = 1;
+    var pct = Math.round(g.residual * 100);
+    if (g.residual > SQUARE_TOL_MANUAL) {
+      flags.unshift('detected outline far from square (' + pct + '% off) — replaced by best-fit square; check corners');
+      cap = Math.min(cap, CAP_MANUAL);
+    } else if (g.residual > SQUARE_TOL_REVIEW) {
+      flags.unshift('detected outline not square (' + pct + '% off) — replaced by best-fit square');
+      cap = Math.min(cap, CAP_REVIEW);
+    }
+    if (g.moved || g.shrunk) {
+      flags.unshift('frame runs off the photo — square kept inside the image; check corners');
+      cap = Math.min(cap, CAP_REVIEW);
+    }
+    var frac = fracOverride !== undefined ? fracOverride : typicalSideFrac(it);
+    if (frac) {
+      var exp = frac * it.imgShort, ratio = it.sidePx / exp;
+      if (ratio < SIZE_TOL[0] || ratio > SIZE_TOL[1]) {
+        flags.unshift('unusual size: ' + Math.round(it.sidePx) + ' px vs ~' + Math.round(exp) + ' px typical in this batch');
+        cap = Math.min(cap, CAP_REVIEW);
+      }
+    }
+    if (it.rawNote) flags.push(it.rawNote);
+    it.flags = flags;
+    it.conf = Math.min(det.confidence || 0, cap);
   }
 
   /** Warp the source image through `quad` into a square JPEG blob + thumbnail. */
@@ -429,10 +746,49 @@
   // ---------------------------------------------------------------- grid/ui
 
   function onThumbClick(item) {
-    if (!item.det || item.status !== 'done') return; // still scanning
+    // 'failed' items must open too: the card tooltip says "No frame found —
+    // click to fix corners manually" and the editor supports placing all four
+    // markers when there is no auto quad, but this guard used to return for
+    // them, so red "no frame" photos could never be fixed or exported.
+    if (!item.det || (item.status !== 'done' && item.status !== 'failed')) return; // still scanning
     // every item opens the review page: the full uncropped photo with the
     // crop's corner markers (draggable) and a live crop preview alongside
-    QDEditor.open(item, function (quad) { reCropManual(item, quad); });
+    openEditorAt(item);
+  }
+
+  /** Photos the editor can show, in grid order (prev/next navigation). */
+  function editableItems() {
+    return state.items.filter(function (it) {
+      return it.det && (it.status === 'done' || it.status === 'failed');
+    });
+  }
+
+  function openEditorAt(item) {
+    var list = editableItems();
+    var idx = list.indexOf(item);
+    ensureBlob(item).then(function () {
+      QDEditor.open(item, function (quad) {
+        reCropManual(item, quad).then(function () { releaseOriginal(item); });
+      }, {
+        pos: idx + 1,
+        total: list.length,
+        go: function (dir) {
+          var target = list[idx + dir];
+          if (!target) return;
+          // leaving an untouched Drive photo: drop its original again
+          if (item.source !== 'manual') releaseOriginal(item);
+          openEditorAt(target);
+        }
+      });
+      // fetch the next photo's original in the background (Drive items are
+      // released after processing), so → shows it without a wait
+      var nxt = list[idx + 1];
+      if (nxt && !nxt.blob && nxt.origin === 'drive-api') {
+        QDDrive.downloadFile(nxt.driveId).then(function (b) {
+          return QDRaw.isRaw(nxt.name) ? QDRaw.toJpeg(b).then(function (r) { return r.blob; }) : b;
+        }).then(function (b) { if (!nxt.blob) nxt.blob = b; }, function () { /* fetched on demand */ });
+      }
+    }, function (e) { alert('Could not load the original photo: ' + (e.message || e)); });
   }
 
   function render() {
@@ -446,7 +802,8 @@
   function renderStats() {
     var n = QDGrid.updateStats(state.items);
     var ok = n.auto, review = n.review, manual = n.manual, failed = n.failed;
-    var total = ok + review + manual + failed;
+    var adjusted = n.adjusted || 0;
+    var total = ok + review + manual + failed + adjusted + (n.excluded || 0);
     if (!total) { ui.stats.hidden = true; ui.exportBtn.textContent = '⬇ Export ZIP'; return; }
     ui.stats.hidden = false;
     var ready = state.items.filter(isExportable).length;
@@ -455,6 +812,8 @@
       '<span><b>' + review + '</b> suggested review</span>' +
       '<span><b>' + manual + '</b> need manual corners</span>' +
       '<span><b>' + failed + '</b> no frame found</span>' +
+      (adjusted ? '<span><b>' + adjusted + '</b> manually adjusted</span>' : '') +
+      (n.excluded ? '<span><b>' + n.excluded + '</b> excluded</span>' : '') +
       '<span><b>' + total + '</b> total</span>' +
       '<span>· <b>' + ready + '</b> ready for export</span>';
     ui.exportBtn.textContent = '⬇ Export ZIP (' + ready + ')';
@@ -462,8 +821,15 @@
     ui.exportBtn.disabled = !state.items.length;
   }
 
+  function toggleExclude(it) {
+    it.excluded = !it.excluded;
+    QDGrid.updateCard(it);
+    renderStats();
+  }
+
   /** An item qualifies for export on its own merits — no manual ticking. */
   function isExportable(it) {
+    if (it.excluded) return false;
     return !!it.cropBlob && (it.source === 'manual' || (it.ok && it.conf >= 0.8));
   }
 
@@ -476,13 +842,23 @@
         + 'them — a manually adjusted crop is always included.');
       return;
     }
+    var meta = QDMetaTab.exportInfo();
+    if (meta) {
+      var miss = meta.missing(sel);
+      if (miss.length && !confirm('Metadata is incomplete for ' + miss.length + ' group(s):\n\n'
+          + miss.slice(0, 10).join('\n') + (miss.length > 10 ? '\n…' : '')
+          + '\n\nExport anyway? (Cancel opens the Metadata tab.)')) {
+        showTab('meta');
+        return;
+      }
+    }
     var skipped = state.items.length - sel.length;
     setProgress(true, 'Building ZIP…', null);
-    QDExport.exportZip(sel, state.items).then(function (size) {
+    QDExport.exportZip(sel, state.items, meta).then(function (size) {
       setProgress(false);
       alert(sel.length + ' crop' + (sel.length === 1 ? '' : 's') + ' exported.'
         + (skipped ? '\n\n' + skipped + ' image' + (skipped === 1 ? '' : 's')
-          + ' not included (confidence < 80% and not manually adjusted) — they are listed in manifest.csv.' : ''));
+          + ' not included (excluded, or confidence < 80% and not manually adjusted) — they are listed in manifest.csv.' : ''));
       console.log('zip ready:', size);
     }).catch(function (e) { setProgress(false); alert(String(e.message || e)); });
   }
@@ -494,12 +870,23 @@
     render();
   }
 
+  function showTab(name) {
+    Array.prototype.forEach.call(document.querySelectorAll('.tabs [data-tab]'), function (b) {
+      b.classList.toggle('active', b.getAttribute('data-tab') === name);
+    });
+    el('photosPanel').hidden = name !== 'photos';
+    el('metaPanel').hidden = name !== 'meta';
+    if (name === 'meta') QDMetaTab.render();
+  }
+
   function openSettings() {
     ui.clientIdInput.value = QDDrive.getClientId();
+    el('insetInput').value = getInset();
     ui.settingsDialog.showModal();
   }
   function saveSettings() {
     QDDrive.setConfig(ui.clientIdInput.value, QDDrive.getApiKey());
+    try { localStorage.setItem('quadrat.inset', String(Math.max(0, Math.min(20, +el('insetInput').value || 0)))); } catch (e) { /* private mode */ }
     ui.settingsDialog.close();
   }
 
@@ -508,6 +895,7 @@
   // debug/testing hook
   window.__qd = {
     items: state,
-    reCropManual: reCropManual
+    reCropManual: reCropManual,
+    poolSize: function () { return (pool || []).length; }
   };
 })(typeof self !== 'undefined' ? self : this);
