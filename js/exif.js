@@ -35,7 +35,10 @@
     var little = dv.getUint16(0) === 0x4949;
     function u16(o) { return dv.getUint16(o, little); }
     function u32(o) { return dv.getUint32(o, little); }
-    if (u16(2) !== 0x2a) return {};
+    // 0x2a = TIFF (CR2, NEF, ARW, DNG, PEF…); Olympus ORF uses "RO"/"RS",
+    // Panasonic RW2 uses 0x55 — same IFD layout otherwise
+    var magic = u16(2);
+    if (magic !== 0x2a && magic !== 0x4f52 && magic !== 0x5352 && magic !== 0x55) return {};
     var t0 = u32(4);                       // IFD0 offset
     if (t0 + 2 > dv.byteLength) return {};
     var out = {};
@@ -101,5 +104,10 @@
     }
   }
 
-  root.QDExif = { fromBlob: fromBlob };
+  /** EXIF straight from a TIFF-based RAW file (whole-file ArrayBuffer). */
+  function fromTiffBuffer(buf) {
+    try { return parseExifBuffer(buf); } catch (e) { return {}; }
+  }
+
+  root.QDExif = { fromBlob: fromBlob, fromTiffBuffer: fromTiffBuffer };
 })(typeof self !== 'undefined' ? self : this);

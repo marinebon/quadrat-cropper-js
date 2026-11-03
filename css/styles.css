@@ -102,6 +102,7 @@ main { padding: 16px; }
   background: #0009; color: var(--text);
 }
 .card .badge.manual { color: var(--red); }
+.card .badge.adjusted { color: #fff; background: var(--blue); }
 .card .meta {
   padding: 7px 9px 9px; font-size: 11.5px; color: var(--muted);
   display: flex; align-items: center; gap: 6px;
@@ -116,6 +117,21 @@ main { padding: 16px; }
 .card[data-tier="review"] { box-shadow: 0 0 0 6px var(--amber); }
 .card[data-tier="manual"] { box-shadow: 0 0 0 6px var(--red); }
 .card[data-tier="failed"] { box-shadow: 0 0 0 6px var(--red); }
+/* cropped by hand in the editor: blue, so fixed photos stand out from both
+   the auto-accepted (green) and the still-to-fix (red/amber) ones */
+.card[data-tier="adjusted"] { box-shadow: 0 0 0 6px var(--blue); }
+/* excluded from the export: greyed out, still restorable */
+.card[data-tier="excluded"] { box-shadow: 0 0 0 6px #55606a; opacity: .45; }
+.card[data-tier="excluded"]:hover { opacity: .8; }
+.card .badge.excluded { color: #fff; background: #55606a; }
+.card .excl {
+  position: absolute; top: 6px; right: 6px; z-index: 2;
+  width: 26px; height: 26px; padding: 0; border-radius: 50%;
+  border: 0; background: #000a; color: #fff; font-size: 14px; line-height: 26px;
+  cursor: pointer; opacity: .75;
+}
+.card .excl:hover { opacity: 1; background: var(--red); }
+.card[data-tier="excluded"] .excl:hover { background: var(--blue); }
 /* failed cards show the source photo, not a crop */
 .card[data-tier="failed"] img.thumb { object-fit: contain; }
 
@@ -141,6 +157,7 @@ main { padding: 16px; }
 .legend .chip.green::before { color: #35c46a; }
 .legend .chip.amber::before { color: #e8b13a; }
 .legend .chip.red::before { color: #e05252; }
+.legend .chip.blue::before { color: #4a90d9; }
 .linklike { background: none; border: none; color: var(--accent, #6cb2ff);
             cursor: pointer; padding: 0; font: inherit; text-decoration: underline; }
 .copyable { font-family: monospace; font-size: 12px; padding: 3px 8px;

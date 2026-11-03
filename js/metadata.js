@@ -25,6 +25,17 @@
       m.site = hit[4] || null;
       m.group = hit[5] ? +hit[5] : null;
       m.code = hit[6] || null;
+      // The site group needs at least one token, so in "20251028_IMG111148"
+      // (date + camera code, no site — the AIR Centre 2025 naming) the code
+      // was swallowed as site="IMG111148" and code=null, breaking the
+      // code-based CSV join. Move a trailing code-shaped site token over.
+      if (!m.code && m.site) {
+        var toks = m.site.split('_');
+        if (/^[A-Z]{1,3}\d{4,7}$/i.test(toks[toks.length - 1])) {
+          m.code = toks.pop();
+          m.site = toks.length ? toks.join('_') : null;
+        }
+      }
       return m;
     }
     // plain "CODE 1234567" style (e.g. P1120587)
@@ -35,6 +46,10 @@
 
   /** RFC-ish CSV parser (handles quoted fields, commas, newlines, \r\n). */
   function parseCSV(text) {
+    // Excel "CSV UTF-8" starts with a BOM: without stripping it the first
+    // header becomes "﻿filename" and the filename join silently fails.
+    if (text.charCodeAt(0) === 0xfeff) text = text.slice(1);
+    var delim = sniffDelimiter(text);
     var rows = [], row = [], field = '', inQ = false;
     for (var i = 0; i < text.length; i++) {
       var ch = text[i];
@@ -43,7 +58,7 @@
           if (text[i + 1] === '"') { field += '"'; i++; } else inQ = false;
         } else field += ch;
       } else if (ch === '"') inQ = true;
-      else if (ch === ',') { row.push(field); field = ''; }
+      else if (ch === delim) { row.push(field); field = ''; }
       else if (ch === '\n' || ch === '\r') {
         if (ch === '\r' && text[i + 1] === '\n') i++;
         row.push(field); field = '';
@@ -60,6 +75,26 @@
       return o;
     });
     return { header: header, rows: data };
+  }
+
+  /**
+   * Pick the field separator from the header line (outside quotes).
+   * Excel in Spanish/Portuguese/French locales — most P2P partners — saves
+   * "CSV" with ';' because ',' is the decimal mark; parsing those with ','
+   * collapsed each row into a single column and nothing ever joined.
+   */
+  function sniffDelimiter(text) {
+    var counts = { ',': 0, ';': 0, '\t': 0 }, inQ = false;
+    for (var i = 0; i < text.length; i++) {
+      var ch = text[i];
+      if (ch === '"') inQ = !inQ;
+      else if (!inQ && (ch === '\n' || ch === '\r')) break;
+      else if (!inQ && ch in counts) counts[ch]++;
+    }
+    var best = ',';
+    if (counts[';'] > counts[best]) best = ';';
+    if (counts['\t'] > counts[best]) best = '\t';
+    return best;
   }
 
   /** Build a lookup: filename-ish & code-ish keys -> CSV row. */
@@ -97,7 +132,10 @@
     var meta = Object.assign({}, parsed);
     meta.csv = {};
     (csvs || []).forEach(function (csv) {
-      var idx = buildCSVIndex(csv.header, csv.rows);
+      // Build each CSV's index once, not once per image: with a CoralNet
+      // annotations.csv (~30k rows) next to ~1k photos the old code rebuilt
+      // a 30k-row index 1000 times on the main thread.
+      var idx = csv._idx || (csv._idx = buildCSVIndex(csv.header, csv.rows));
       var name = fname.toLowerCase();
       var bare = name.replace(/\.[^.]+$/, '');
       var rowIdx = (name in idx.byName) ? idx.byName[name]
