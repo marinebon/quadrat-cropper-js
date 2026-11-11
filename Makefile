@@ -34,7 +34,7 @@ DEPLOY_WAIT ?= 180
 
 preview:
 	@printf 'Serving %s at http://localhost:%s  (Ctrl-C to stop)\n' "$(CURDIR)" "$(PORT)"
-	$(PYTHON) -m http.server $(PORT) --bind 127.0.0.1
+	$(PYTHON) tools/serve.py $(PORT)   # like http.server, plus Cache-Control: no-store
 
 test:
 	@$(MAKE_TEST)
