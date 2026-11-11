@@ -39,7 +39,7 @@
   // Detector version — bumped when qd.js or its calling contract changes.
   // app.js surfaces this in the page title / header so users can confirm
   // they are running a fresh build (not a cached one).
-  var VERSION = '1.5.3';
+  var VERSION = '1.16.1';
 
   var DEFAULTS = {
     workWidth: 1152,
@@ -48,7 +48,7 @@
     // a fixed height over the 25 cm opening) keeps this in a narrow band;
     // combos far outside it are sub-region or coupe-assembly clumps
     openingSideMin: 0.38,
-    openingSideMax: 0.75,
+    openingSideMax: 0.95,   // was 0.75: TG-7 1:1 subtidal shots and tight hand-held shots fill ~85 % of the frame
     hueMin: 118, hueMax: 172,
     satMin: 0.13,
     valMin: 0.045,
@@ -101,6 +101,30 @@
       // the structural scoring (RANSAC + opening probes) prunes instead.
       hueMin: 42, hueMax: 82, satMin: 0.20, valMin: 0.35,
       highlightHueMin: 25, highlightHueMax: 95,
+    },
+    // Same mint PVC as seen by the Olympus/OM TG-6/TG-7 (the P2P protocol
+    // camera): its rendering puts the tube at hue ~165-185 in air and ~180-
+    // 205 underwater (turquoise / pale cyan), vs ~140-150 on the Panasonic G8
+    // the mint band was tuned on. Measured on field photos (2026): only
+    // 3-69 % of tube pixels fell inside the mint band and those photos
+    // failed. Run only when mint/yellow found nothing confident, so photos
+    // that already work keep their result and their speed.
+    cyan: {
+      color: 'cyan',
+      hueMin: 158, hueMax: 205, satMin: 0.13, valMin: 0.30,
+      highlightHueMin: 140, highlightHueMax: 220,
+    },
+    // Thin white / aluminium rod frames (subtidal programs: Canon SL1 / CR2,
+    // GoPro): no hue of their own — bright, weakly saturated pixels. Last
+    // resort (also only when nothing reached 0.8), because bright sand and
+    // blown highlights share the band; the structural scoring + the app's
+    // square / confidence checks flag the doubtful ones. On 125 field samples
+    // it recovered 10 photos (7 correct, 2 flagged for review, 1 ambiguous
+    // two-cell frame) and fixed the AP161656 fixture in the browser.
+    white: {
+      color: 'white',
+      hueMin: -1, hueMax: 360, satMin: 0, satMax: 0.30, valMin: 0.62,
+      highlightHueMin: 0, highlightHueMax: 360,
     },
   };
 
@@ -160,7 +184,8 @@
         else h = 60 * ((r - g) / df) + 240;
         if (h < 0) h += 360;
       }
-      if (h >= opts.hueMin && h <= opts.hueMax && s >= opts.satMin && v >= opts.valMin) {
+      if (h >= opts.hueMin && h <= opts.hueMax && s >= opts.satMin && v >= opts.valMin &&
+          (opts.satMax === undefined || s <= opts.satMax)) {
         mask[i] = 1;
         cx += i % W; cy += (i / W) | 0; cnt++;
       }
@@ -674,7 +699,7 @@
     var scaled = scale < 1 ? boxScale(image, Math.round(srcW * scale), Math.round(srcH * scale))
                            : { width: image.width, height: image.height, data: image.data };
 
-    var names = ['mint', 'yellow'];
+    var names = ['mint', 'yellow', 'cyan', 'white'];
     if (options && FRAME_COLORS[options.color]) names = [options.color];
     else if (options && (options.hueMin !== undefined || options.satMin !== undefined || options.valMin !== undefined)) {
       names = ['custom']; // caller pinned an explicit band — single pass
@@ -692,6 +717,8 @@
     var smoothR = scale < (opts.maskSmoothBelow || 0.5) ? (opts.maskSmooth || 0) : 0;
     for (var pi = 0; pi < names.length; pi++) {
       var nm = names[pi];
+      // fallback pass: skip it when an earlier color is already confident
+      if ((nm === 'cyan' || nm === 'white') && bestConf >= 0.8) continue;
       var passOpts = (nm === 'custom')
         ? Object.assign({}, opts, { color: 'custom' })
         : Object.assign({}, opts, FRAME_COLORS[nm]);
@@ -1355,6 +1382,64 @@
     return out;
   }
 
+  /**
+   * Best-fit SQUARE through four corners (TL,TR,BR,BL), least squares over a
+   * similarity transform (translation + rotation + uniform scale, no shear).
+   * The camera is rigidly mounted on the frame, so the opening is a square
+   * in the image; any other shape is a detection error, not geometry.
+   * Returns { quad, side, residual } — residual = max corner shift / side.
+   */
+  function fitSquare(quad) {
+    var C = [[-1, -1], [1, -1], [1, 1], [-1, 1]];
+    var mx = 0, my = 0, i;
+    for (i = 0; i < 4; i++) { mx += quad[i].x / 4; my += quad[i].y / 4; }
+    var a = 0, b = 0;
+    for (i = 0; i < 4; i++) {
+      var px = quad[i].x - mx, py = quad[i].y - my;
+      a += C[i][0] * px + C[i][1] * py;
+      b += C[i][0] * py - C[i][1] * px;
+    }
+    a /= 8; b /= 8;
+    var out = C.map(function (c) {
+      return { x: mx + a * c[0] - b * c[1], y: my + b * c[0] + a * c[1] };
+    });
+    var side = 2 * Math.hypot(a, b);
+    var res = 0;
+    for (i = 0; i < 4; i++) res = Math.max(res, Math.hypot(out[i].x - quad[i].x, out[i].y - quad[i].y));
+    return { quad: out, side: side, residual: side > 0 ? res / side : 1 };
+  }
+
+  /** Scale a quad about its centroid (f = 0.95 → 5 % smaller side). */
+  function scaleQuad(quad, f) {
+    var mx = 0, my = 0;
+    quad.forEach(function (c) { mx += c.x / 4; my += c.y / 4; });
+    return quad.map(function (c) { return { x: mx + (c.x - mx) * f, y: my + (c.y - my) * f }; });
+  }
+
+  /**
+   * Keep a quad inside [0,W-1]×[0,H-1]: translate first, shrink about its
+   * centre only if it cannot fit. Returns { quad, moved, shrunk }.
+   */
+  function fitInside(quad, W, H) {
+    var q = quad.map(function (c) { return { x: c.x, y: c.y }; });
+    var xs = q.map(function (c) { return c.x; }), ys = q.map(function (c) { return c.y; });
+    var minX = Math.min.apply(null, xs), maxX = Math.max.apply(null, xs);
+    var minY = Math.min.apply(null, ys), maxY = Math.max.apply(null, ys);
+    var maxW = W - 1, maxH = H - 1, shrunk = false;
+    var s = Math.min(1, maxW / (maxX - minX || 1), maxH / (maxY - minY || 1));
+    if (s < 1) {
+      var cx = (minX + maxX) / 2, cy = (minY + maxY) / 2;
+      q = q.map(function (c) { return { x: cx + (c.x - cx) * s, y: cy + (c.y - cy) * s }; });
+      minX = cx + (minX - cx) * s; maxX = cx + (maxX - cx) * s;
+      minY = cy + (minY - cy) * s; maxY = cy + (maxY - cy) * s;
+      shrunk = true;
+    }
+    var dx = minX < 0 ? -minX : (maxX > maxW ? maxW - maxX : 0);
+    var dy = minY < 0 ? -minY : (maxY > maxH ? maxH - maxY : 0);
+    if (dx || dy) q = q.map(function (c) { return { x: c.x + dx, y: c.y + dy }; });
+    return { quad: q, moved: !!(dx || dy), shrunk: shrunk };
+  }
+
   function solveH(pairs) {
     var M = [], i;
     for (i = 0; i < 8; i++) M.push(new Array(9).fill(0));
@@ -1415,6 +1500,30 @@
     return out;
   }
 
+  /**
+   * The suggested crop: best-fit square of the detected quad, then either
+   * shrunk by `inset` % (default mode) or rescaled to a FIXED side in
+   * original-photo px (opts.side), and finally kept inside the photo.
+   * Shared by app.js and worker.js so both paths give the same crop.
+   * detSide = side of the detected square (before inset / fixed size), used
+   * for the batch "unusual size" check.
+   */
+  function suggestSquare(quadRaw, W, H, opts) {
+    opts = opts || {};
+    var sq = fitSquare(quadRaw);
+    var fixed = opts.side && sq.side > 0 ? +opts.side : 0;
+    var inset = fixed ? 0 : (+opts.inset || 0);
+    var q = fixed ? scaleQuad(sq.quad, fixed / sq.side)
+      : (inset ? scaleQuad(sq.quad, 1 - inset / 100) : sq.quad);
+    var ins = fitInside(q, W, H);
+    var fq = ins.quad;
+    return {
+      quad: fq, side: Math.hypot(fq[1].x - fq[0].x, fq[1].y - fq[0].y),
+      detSide: sq.side, residual: sq.residual, moved: ins.moved, shrunk: ins.shrunk,
+      inset: inset, fixedSide: fixed || null
+    };
+  }
+
   return {
     VERSION: VERSION,
     DEFAULTS: DEFAULTS,
@@ -1426,6 +1535,10 @@
     castRays: castRays,
     ransacLines: ransacLines,
     solveH: solveH,
+    fitSquare: fitSquare,
+    suggestSquare: suggestSquare,
+    fitInside: fitInside,
+    scaleQuad: scaleQuad,
     applyH: applyH,
     isGreenAt: isGreenAt,
     polyArea: polyArea,
